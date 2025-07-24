@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Dict, Any, Optional, List, Union, TypedDict
 from datetime import datetime, timedelta
 from telegram.helpers import escape_markdown
+import json
 
 class NodeData(TypedDict):
     shortName: str
@@ -30,6 +31,34 @@ class NodeManager:
         self.nodes: Dict[str, NodeData] = {}
         self.node_history: Dict[str, List[NodeData]] = {}
         self.history_limit: int = 100
+        self.load_nodes()
+        
+    def load_nodes(self):
+        print("Loading nodes from nodes.json...")
+        try:
+            with open('nodes.json', 'r') as f:
+                self.nodes = json.load(f)
+                for node_id, data in self.nodes.items():
+                    if 'last_updated' not in data:
+                        data['last_updated'] = datetime.now().isoformat()
+                    if node_id not in self.node_history:
+                        self.node_history[node_id] = []
+                    self.node_history[node_id].append(data)
+        except FileNotFoundError:
+            self.nodes = {}
+            self.node_history = {}
+        except json.JSONDecodeError:
+            print("\n\n\nError decoding JSON from nodes.json, starting with an empty node list.\n\n\n")
+            self.nodes = {}
+            self.node_history = {}
+
+    def format_node_name_no_map(self, node_id: Union[str, int], short_name: str) -> str:
+        numeric_id: int = (
+            int(node_id[1:], 16) if isinstance(node_id, str) and node_id.startswith('!')
+            else int(node_id) if isinstance(node_id, str)
+            else node_id
+        )
+        return f'{self.escape_value(node_id)} ({self.escape_value(short_name)})'
 
     def format_node_name(self, node_id: Union[str, int], short_name: str) -> str:
         numeric_id: int = (
@@ -89,6 +118,9 @@ class NodeManager:
         
         self.nodes[node_id].update(data)
         self.nodes[node_id]['last_updated'] = datetime.now().isoformat()
+
+        with open('nodes.json', 'w') as f:
+            json.dump(self.nodes, f, indent=2)
         
         self.node_history[node_id].append(self.nodes[node_id].copy())
         if len(self.node_history[node_id]) > self.history_limit:
