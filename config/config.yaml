@@ -4,26 +4,35 @@
 # please use https://direnv.net/ or similar to manage the environment variables
 
 telegram:
-  bot_token: "${TELEGRAM_BOT_TOKEN}" # https://core.telegram.org/bots/tutorial
-  chat_id: "${TELEGRAM_CHAT_ID}"
+  bot_token: "1111111111:XXXXX-XX-XXXXXXXXXXXXXX-XXX_XXXXXXX" # https://core.telegram.org/bots/tutorial
+  chat_id: "-1111111111111"
   authorized_users:
-    - 19971683
+    - 1111111111
 
 meshtastic:
   connection_type: 'serial'  # 'serial' or 'tcp'
-  device: "${MESHTASTIC_DEVICE}" # for serial connection
-  default_node_id: '!4e1a832c'
+  device: "/dev/ttyACM0" # for serial connection
+  #default_node_id: '!da73e1bc'
+  default_node_id: '^all' # where to send the telegram messages
+  # default_channel_id: 0 # default channel to use for sending messages
   heartbeat_timeout: 300 # timeout in seconds for node heartbeats
-  local_nodes:
-    - '!4e1a832c'
-    - '!4e19d9a4'
-    - '!e72e9724'
+  #local_nodes:
+  #  - '!ba66fc64'
+
+channels:
+  - 'LongFast'
+  - 'Bulgaria'
+
+reports:
+  telemetry: False
+  location: False
 
 logging:
   level: 'info'
   level_telegram: 'warn'
   level_httpx: 'warn'
   use_syslog: false
-  syslog_host: "${SYSLOG_HOST}"
+  syslog_host: "127.0.0.1"
   syslog_port: 514
   syslog_protocol: 'udp'  # 'udp' or 'tcp'
+
