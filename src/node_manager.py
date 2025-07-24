@@ -4,6 +4,7 @@ from typing import Dict, Any, Optional, List, Union, TypedDict
 from datetime import datetime, timedelta
 from telegram.helpers import escape_markdown
 import json
+from config_manager import ConfigManager, get_logger
 
 class NodeData(TypedDict):
     shortName: str
@@ -28,13 +29,14 @@ class NodeData(TypedDict):
 
 class NodeManager:
     def __init__(self) -> None:
+        self.logger = get_logger(__name__)
         self.nodes: Dict[str, NodeData] = {}
         self.node_history: Dict[str, List[NodeData]] = {}
         self.history_limit: int = 100
         self.load_nodes()
         
     def load_nodes(self):
-        print("Loading nodes from nodes.json...")
+        self.logger.info("Loading nodes from nodes.json...")
         try:
             with open('nodes.json', 'r') as f:
                 self.nodes = json.load(f)
@@ -48,7 +50,7 @@ class NodeManager:
             self.nodes = {}
             self.node_history = {}
         except json.JSONDecodeError:
-            print("\n\n\nError decoding JSON from nodes.json, starting with an empty node list.\n\n\n")
+            self.logger.warning("Error decoding JSON from nodes.json, starting with an empty node list.")
             self.nodes = {}
             self.node_history = {}
 

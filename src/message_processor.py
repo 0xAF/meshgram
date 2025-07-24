@@ -141,11 +141,8 @@ class MessageProcessor:
         sender, recipient = packet.get('fromId', 'unknown'), packet.get('toId', 'unknown')
         channels = self.config.get('channels', [])
 
-        print (f"nodes={self.node_manager.nodes}")
-        print (f"packet={packet}")
         formatted_name = sender
         node = self.node_manager.nodes.get(sender)
-        print (f"node={node}")
         if node:
             short_name = node.get('shortName', '')
             long_name = node.get('longName', '')
