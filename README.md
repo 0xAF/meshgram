@@ -12,6 +12,7 @@ Connect your Meshtastic mesh network with Telegram group chats! 📡💬
 - 🗺️ Location sharing between Telegram and Meshtastic
 - 🔐 User authorization for Telegram commands
 - 📝 Optional logging to file and syslog
+- Caches learned nodes to nodes.json
 
 ## 🛠 Requirements
 
@@ -53,10 +54,19 @@ Connect your Meshtastic mesh network with Telegram group chats! 📡💬
    meshtastic:
      connection_type: "serial"  # or "tcp"
      device: "/dev/ttyUSB0"  # or "hostname:port" for TCP
-     default_node_id: "!abcdef12"
+     default_node_id: "!abcdef12" # or "^all"
+     default_channel_id: 0 # the mesh channel id to send the messages to
      local_nodes:
        - "!abcdef12"
        - "!12345678"
+
+   reports:
+      telemetry: True
+      location: True
+
+   channels:
+      - "LongFast" # 0
+      - "MySecondaryChannel" # 1
 
    logging:
      level: "info"
@@ -81,6 +91,8 @@ Connect your Meshtastic mesh network with Telegram group chats! 📡💬
 - `/bell [node_id]` - Send a bell notification to a Meshtastic node
 - `/node [node_id]` - Get information about a specific node
 - `/user` - Get information about your Telegram user
+- `/telemetry <on|off>` - Enable/Disable Telemetry reporting
+- `/location <on|off>` - Enable/Disable Location reporting
 
 ## 🤝 Contributing
 
