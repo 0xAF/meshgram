@@ -111,7 +111,8 @@ class MessageProcessor:
             await self.handle_ack(packet)
         else:
             portnum = packet.get('decoded', {}).get('portnum', '')
-            handler = getattr(self, f"handle_{portnum.lower()}", None)
+            handler_name = f"handle_{portnum.lower()}" if isinstance(portnum, str) else f"handle_{portnum}"
+            handler = getattr(self, handler_name, None)
             if handler:
                 self.logger.info(f"Handling Meshtastic message type {portnum=} from {packet.get('fromId')=}")
                 await handler(packet)
@@ -138,8 +139,30 @@ class MessageProcessor:
     async def handle_text_message_app(self, packet: Dict[str, Any]) -> None:
         text: str = packet['decoded']['payload'].decode('utf-8')
         sender, recipient = packet.get('fromId', 'unknown'), packet.get('toId', 'unknown')
-        
-        message: str = f"📡 Meshtastic: {sender} → {recipient}\n💬 {text}"
+        channels = self.config.get('channels', [])
+
+        print (f"nodes={self.node_manager.nodes}")
+        print (f"packet={packet}")
+        formatted_name = sender
+        node = self.node_manager.nodes.get(sender)
+        print (f"node={node}")
+        if node:
+            short_name = node.get('shortName', '')
+            long_name = node.get('longName', '')
+            if short_name:
+                formatted_name += f" ({short_name})"
+            if long_name:
+                formatted_name += f" ({long_name})"
+
+        channelStr = ""
+        if channels and (channel_num := packet.get('channel', 0)) is not None:
+            try:
+                channel_name = channels[int(channel_num)]
+                channelStr = f"[{channel_name}]:"
+            except (ValueError, IndexError, TypeError):
+                channelStr = f"[CH{channel_num}]:"
+
+        message: str = f"📡 Meshtastic: {formatted_name} → {recipient}\n💬 {channelStr} {text}"
         self.logger.info(f"Sending Meshtastic message to Telegram: {message=}")
         await self.telegram.send_message(message, disable_notification=False)
 

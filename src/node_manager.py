@@ -37,7 +37,7 @@ class NodeManager:
             else int(node_id) if isinstance(node_id, str)
             else node_id
         )
-        return f'[{self.escape_value(node_id)} ({self.escape_value(short_name)})](https://meshtastic.liamcottle.net/?node_id={numeric_id})'
+        return f'[{self.escape_value(node_id)} ({self.escape_value(short_name)})](https://meshmap.net/#{numeric_id})'
 
     def format_node_info(self, node_id: str) -> str:
         node = self.get_node(node_id)
@@ -46,6 +46,7 @@ class NodeManager:
         
         short_name = node.get('shortName', 'unknown')
         formatted_name = self.format_node_name(node_id, short_name)
+
         info = [f"🔷 Node {formatted_name}:"]
         emoji_map = {
             'name': '📛', 'longName': '📝', 'hwModel': '🖥️',
@@ -104,22 +105,47 @@ class NodeManager:
         if not node:
             return f"📍 No position available for node {self.escape_node_id(node_id)}"
         
+        short_name = node.get('shortName', 'unknown')
+        formatted_name = self.format_node_name_no_map(node_id, short_name)
+
         latitude = node.get('latitude', 'N/A')
         longitude = node.get('longitude', 'N/A')
         last_position_update = node.get('last_position_update', 'N/A')
 
         return (
-            f"📍 Position for node {self.escape_node_id(node_id)}:\n"
+            f"📍 Position for node {formatted_name}:\n"
             f"🌎 Latitude: {self.escape_value(latitude)}\n"
             f"🌍 Longitude: {self.escape_value(longitude)}\n"
             f"🕒 Last updated: {self.escape_value(self._format_date(last_position_update) if last_position_update != 'N/A' else 'N/A')}"
         )
+
+    # Convert uptime seconds to readable format
+    def _format_uptime(self, seconds: Any) -> str:
+        try:
+            seconds = int(seconds)
+            days, remainder = divmod(seconds, 86400)
+            hours, remainder = divmod(remainder, 3600)
+            minutes, secs = divmod(remainder, 60)
+            parts = []
+            if days > 0:
+                parts.append(f"{days}d")
+            if hours > 0 or days > 0:
+                parts.append(f"{hours}h")
+            if minutes > 0 or hours > 0 or days > 0:
+                parts.append(f"{minutes}m")
+            parts.append(f"{secs}s")
+            return " ".join(parts)
+        except Exception:
+            return str(seconds)
 
     def get_node_telemetry(self, node_id: str) -> str:
         node = self.get_node(node_id)
         if not node:
             return f"📊 No telemetry available for node {self.escape_node_id(node_id)}"
         
+        short_name = node.get('shortName', 'unknown')
+        formatted_name = self.format_node_name_no_map(node_id, short_name)
+
         battery_level = node.get('batteryLevel', 'N/A')
         battery_str = "PWR" if battery_level == 101 else f"{battery_level}%"
         air_util_tx = node.get('airUtilTx', 'N/A')
@@ -129,12 +155,14 @@ class NodeManager:
         uptime = node.get('uptimeSeconds', 'N/A')
         last_updated = node.get('last_updated', 'N/A')
 
+        readable_uptime = self._format_uptime(uptime)
+
         return (
-            f"📊 Telemetry for node {self.escape_node_id(node_id)}:\n"
+            f"📊 Telemetry for node {formatted_name}:\n"
             f"🔋 Battery: {self.escape_value(battery_str)}\n"
             f"📡 Air Utilization TX: {self.escape_value(air_util_tx_str)}\n"
             f"📊 Channel Utilization: {self.escape_value(channel_utilization_str)}\n"
-            f"⏱️ Uptime: {self.escape_value(str(uptime))} seconds\n"
+            f"⏱️ Uptime: {self.escape_value(readable_uptime)}\n"
             f"🕒 Last updated: {self.escape_value(self._format_date(last_updated) if last_updated != 'N/A' else 'N/A')}"
         )
 
@@ -148,6 +176,7 @@ class NodeManager:
         escaped = escaped.replace("\\_", "_").replace("\\-", "-")
         # Finally, remove escaping for periods (common in node IDs)
         escaped = escaped.replace("\\.", ".")
+        escaped = escaped.replace("\\!", "!")
         return escaped
 
     def validate_node_id(self, node_id: str) -> bool:
@@ -193,7 +222,11 @@ class NodeManager:
             return f"🔀 No routing information available for node {self.escape_node_id(node_id)}"
         
         routing_info = node['routing']
-        return (f"🔀 Routing information for node {self.escape_node_id(node_id)}:\n" + 
+
+        short_name = node.get('shortName', 'unknown')
+        formatted_name = self.format_node_name_no_map(node_id, short_name)
+
+        return (f"🔀 Routing information for node {formatted_name}:\n" + 
                 "\n".join(f"  {self.escape_value(k)}: {self.escape_value(v)}" for k, v in routing_info.items()))
 
     def format_node_neighbors(self, node_id: str) -> str:
@@ -201,8 +234,11 @@ class NodeManager:
         if not node or 'neighbors' not in node:
             return f"👥 No neighbor information available for node {self.escape_node_id(node_id)}"
         
+        short_name = node.get('shortName', 'unknown')
+        formatted_name = self.format_node_name_no_map(node_id, short_name)
+
         neighbor_info = node['neighbors']
-        return (f"👥 Neighbor information for node {self.escape_node_id(node_id)}:\n" + 
+        return (f"👥 Neighbor information for node {formatted_name}:\n" + 
                 "\n".join(f"  {self.escape_value(k)}: {self.escape_value(v)}" for k, v in neighbor_info.items()))
 
     def get_node_sensor_info(self, node_id: str) -> str:
@@ -210,6 +246,9 @@ class NodeManager:
         if not node or 'sensor' not in node:
             return f"🔬 No sensor information available for node {self.escape_node_id(node_id)}"
         
+        short_name = node.get('shortName', 'unknown')
+        formatted_name = self.format_node_name_no_map(node_id, short_name)
+
         sensor_data = node['sensor']
-        return (f"🔬 Sensor information for node {self.escape_node_id(node_id)}:\n" + 
+        return (f"🔬 Sensor information for node {formatted_name}:\n" + 
                 "\n".join(f"  {self.escape_value(k)}: {self.escape_value(v)}" for k, v in sensor_data.items()))
