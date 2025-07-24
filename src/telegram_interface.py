@@ -25,10 +25,12 @@ class TelegramInterface:
         self.commands: Dict[str, CommandData] = {
             'start': {'description': 'Start the bot and see available commands', 'handler': self.start_command},
             'help': {'description': 'Show help message', 'handler': self.help_command},
+            'user': {'description': 'Get information about your Telegram user', 'handler': self.user_command},
             'status': {'description': 'Check the current status', 'handler': self.handle_command},
             'bell': {'description': 'Send a bell to the meshtastic user', 'handler': self.handle_command},
             'node': {'description': 'Get information about a specific node', 'handler': self.handle_command},
-            'user': {'description': 'Get information about your Telegram user', 'handler': self.user_command},
+            'telemetry': {'description': 'Enable/Disable Telemetry reports', 'handler': self.handle_command},
+            'location': {'description': 'Enable/Disable Location reports', 'handler': self.handle_command},
         }
         self.is_polling: bool = False
 

@@ -39,6 +39,10 @@ class PendingAck(TypedDict):
     telegram_message_id: int
     timestamp: datetime
 
+class Reports(TypedDict):
+    telemetry: bool
+    location: bool
+
 class MessageProcessor:
     def __init__(self, meshtastic: MeshtasticInterface, telegram: TelegramInterface, config: ConfigManager) -> None:
         self.config: ConfigManager = config
@@ -54,6 +58,10 @@ class MessageProcessor:
         self.reverse_message_id_map: dict[str, int] = {}
         self.pending_acks: dict[int, PendingAck] = {}
         self.ack_timeout: int = 60  # seconds
+        self.reports: Reports = {
+            'telemetry': config.get('reports.telemetry', True),
+            'location': config.get('reports.location', True)
+        }
 
     async def process_messages(self) -> None:
         self.processing_tasks = [
@@ -280,12 +288,50 @@ class MessageProcessor:
             "Available commands:\n\n"
             "/start - Start the bot and see welcome message\n"
             "/help - Show this help message\n"
+            "/user - Get information about your Telegram user\n"
+            "\n"
+            "Admin commands:\n"
             "/status - Check the current status of Meshgram and Meshtastic\n"
             "/bell [node_id] - Send a bell notification to a Meshtastic node\n"
             "/node [node_id] - Get information about a specific node\n"
-            "/user - Get information about your Telegram user"
+            "/telemetry <on|off> - Enable or disable telemetry reporting\n"
+            "/location <on|off> - Enable or disable location reporting\n"
         )
         await update.message.reply_text(escape_markdown(help_text, version=2), parse_mode=ParseMode.MARKDOWN_V2)
+
+    async def cmd_telemetry(self, args: list[str], user_id: int, update: Update) -> None:
+        if not args:
+            msg = f"Telemetry is currently {'enabled' if self.reports['telemetry'] else 'disabled'}. Use /telemetry <on|off> to change this."
+            await update.message.reply_text(escape_markdown(msg, version=2), parse_mode=ParseMode.MARKDOWN_V2)
+            return
+
+        action = args[0].lower()
+
+        if action not in ['on', 'off']:
+            msg = "Invalid argument. Use 'on' or 'off'."
+            await update.message.reply_text(escape_markdown(msg, version=2), parse_mode=ParseMode.MARKDOWN_V2)
+            return
+
+        self.reports['telemetry'] = (action == 'on')
+        msg = f"Telemetry reporting has been {'enabled' if self.reports['telemetry'] else 'disabled'}."
+        await update.message.reply_text(escape_markdown(msg, version=2), parse_mode=ParseMode.MARKDOWN_V2)
+
+    async def cmd_location(self, args: list[str], user_id: int, update: Update) -> None:
+        if not args:
+            msg = f"Location reporting is currently {'enabled' if self.reports['location'] else 'disabled'}. Use /location <on|off> to change this."
+            await update.message.reply_text(escape_markdown(msg, version=2), parse_mode=ParseMode.MARKDOWN_V2)
+            return
+
+        action = args[0].lower()
+
+        if action not in ['on', 'off']:
+            msg = "Invalid argument. Use 'on' or 'off'."
+            await update.message.reply_text(escape_markdown(msg, version=2), parse_mode=ParseMode.MARKDOWN_V2)
+            return
+
+        self.reports['location'] = (action == 'on')
+        msg = f"Location reporting has been {'enabled' if self.reports['location'] else 'disabled'}."
+        await update.message.reply_text(escape_markdown(msg, version=2), parse_mode=ParseMode.MARKDOWN_V2)
 
     async def cmd_status(self, args: list[str], user_id: int, update: Update) -> None:
         status: str = await self.get_status()
@@ -390,12 +436,14 @@ class MessageProcessor:
     async def _update_telemetry_message(self, node_id: str, telemetry_data: dict[str, Any]) -> None:
         self.node_manager.update_node_telemetry(node_id, telemetry_data)
         telemetry_info = self.node_manager.get_node_telemetry(node_id)
-        await self.telegram.send_or_edit_message('telemetry', node_id, telemetry_info)
+        if self.reports.get('telemetry', True):
+            await self.telegram.send_or_edit_message('telemetry', node_id, telemetry_info)
 
     async def _update_location_message(self, node_id: str, position_data: dict[str, Any]) -> None:
         self.node_manager.update_node_position(node_id, position_data)
         position_info = self.node_manager.get_node_position(node_id)
-        await self.telegram.send_or_edit_message('location', node_id, position_info)
+        if self.reports.get('location', True):
+            await self.telegram.send_or_edit_message('location', node_id, position_info)
 
     def _get_battery_status(self, battery_level: int) -> str:
         return "PWR" if battery_level == 101 else f"{battery_level}%"
@@ -416,12 +464,14 @@ class MessageProcessor:
         node_id = packet.get('fromId', 'unknown')
         self.node_manager.update_node_position(node_id, position)
         position_info = self.node_manager.get_node_position(node_id)
-        await self.telegram.send_or_edit_message('location', node_id, position_info)
+        if self.reports.get('location', True):
+            await self.telegram.send_or_edit_message('location', node_id, position_info)
         
         latitude = position.get('latitudeI', 0) / 1e7
         longitude = position.get('longitudeI', 0) / 1e7
         if latitude != 0 and longitude != 0:
-            await self.telegram.bot.send_location(chat_id=self.telegram.chat_id, latitude=latitude, longitude=longitude)
+            if self.reports.get('location', True):
+                await self.telegram.bot.send_location(chat_id=self.telegram.chat_id, latitude=latitude, longitude=longitude)
 
     async def handle_telemetry_app(self, packet: MeshtasticPacket) -> None:
         node_id = packet.get('fromId', 'unknown')
@@ -429,7 +479,8 @@ class MessageProcessor:
         device_metrics = telemetry.get('deviceMetrics', {})
         self.node_manager.update_node_telemetry(node_id, device_metrics)
         telemetry_info = self.node_manager.get_node_telemetry(node_id)
-        await self.telegram.send_or_edit_message('telemetry', node_id, telemetry_info)
+        if self.reports.get('telemetry', True):
+            await self.telegram.send_or_edit_message('telemetry', node_id, telemetry_info)
 
     async def handle_admin_app(self, packet: dict[str, Any]) -> None:
         admin_message = packet.get('decoded', {}).get('admin', {})
@@ -454,12 +505,14 @@ class MessageProcessor:
     async def _handle_device_metrics(self, node_id: str, device_metrics: dict[str, Any]) -> None:
         self.node_manager.update_node_telemetry(node_id, device_metrics)
         telemetry_info = self.node_manager.get_node_telemetry(node_id)
-        await self.telegram.send_or_edit_message('telemetry', node_id, telemetry_info)
+        if self.reports.get('telemetry', True):
+            await self.telegram.send_or_edit_message('telemetry', node_id, telemetry_info)
 
     async def _handle_position(self, node_id: str, position: dict[str, Any]) -> None:
         self.node_manager.update_node_position(node_id, position)
         position_info = self.node_manager.get_node_position(node_id)
-        await self.telegram.send_or_edit_message('location', node_id, position_info)
+        if self.reports.get('location', True):
+            await self.telegram.send_or_edit_message('location', node_id, position_info)
 
     def start_background_tasks(self) -> None:
         self.processing_tasks.append(asyncio.create_task(self.process_pending_acks()))
