@@ -68,7 +68,7 @@ class MeshtasticInterface:
                 return await asyncio.to_thread(serial_interface.SerialInterface, device)
             case 'tcp':
                 host, port = device.split(':')
-                return await asyncio.to_thread(tcp_interface.TCPInterface, hostname=host, port=int(port))
+                return await asyncio.to_thread(tcp_interface.TCPInterface, hostname=host, portNumber=int(port))
             case _:
                 raise ValueError(f"Unsupported connection type: {connection_type}")
 
