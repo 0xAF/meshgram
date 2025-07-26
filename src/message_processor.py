@@ -42,6 +42,7 @@ class PendingAck(TypedDict):
 class Reports(TypedDict):
     telemetry: bool
     location: bool
+    nodes: bool
 
 class MessageProcessor:
     def __init__(self, meshtastic: MeshtasticInterface, telegram: TelegramInterface, config: ConfigManager) -> None:
@@ -60,8 +61,10 @@ class MessageProcessor:
         self.ack_timeout: int = 60  # seconds
         self.reports: Reports = {
             'telemetry': config.get('reports.telemetry', True),
-            'location': config.get('reports.location', True)
+            'location': config.get('reports.location', True),
+            'nodes': config.get('reports.nodes', True),
         }
+        self.forwarding_enabled: bool = config.get('meshtastic.enable_message_forwarding', False)
 
     async def process_messages(self) -> None:
         self.processing_tasks = [
@@ -164,6 +167,9 @@ class MessageProcessor:
         await self.telegram.send_message(message, disable_notification=False)
 
     async def handle_telegram_text(self, message: Dict[str, Any]) -> None:
+        if not self.forwarding_enabled:
+            return
+
         self.logger.info(f"Handling Telegram text message: {message}")
         sender = message['sender'][:10]
         recipient = self.config.get('meshtastic.default_node_id')
@@ -265,7 +271,7 @@ class MessageProcessor:
                 self.logger.error("Missing user_id or update in command message")
                 return
 
-            if not self.telegram.is_user_authorized(user_id) and command not in ['start', 'help', 'user']:
+            if not self.telegram.is_user_authorized(user_id) and command not in ['start', 'help', 'user', 'node', 'status', 'features']:
                 await update.message.reply_text("You are not authorized to use this command.")
                 return
 
@@ -314,47 +320,78 @@ class MessageProcessor:
             "/status - Check the current status of Meshgram and Meshtastic\n"
             "/bell [node_id] - Send a bell notification to a Meshtastic node\n"
             "/node [node_id] - Get information about a specific node\n"
-            "/telemetry <on|off> - Enable or disable telemetry reporting\n"
-            "/location <on|off> - Enable or disable location reporting\n"
+            "/enable <feature> - Enable a feature\n"
+            "/disable <feature> - Disable a feature\n"
+            "/features - List features\n"
         )
         await update.message.reply_text(escape_markdown(help_text, version=2), parse_mode=ParseMode.MARKDOWN_V2)
 
-    async def cmd_telemetry(self, args: list[str], user_id: int, update: Update) -> None:
-        if not args:
-            msg = f"Telemetry is currently {'enabled' if self.reports['telemetry'] else 'disabled'}. Use /telemetry <on|off> to change this."
-            await update.message.reply_text(escape_markdown(msg, version=2), parse_mode=ParseMode.MARKDOWN_V2)
-            return
+    def format_features(self) -> str:
+        msg = (
+            f"Telemetry reporting: {'enabled' if self.reports['telemetry'] else 'disabled'}.\n"
+            f"Location reporting: {'enabled' if self.reports['location'] else 'disabled'}.\n"
+            f"Nodes reporting: {'enabled' if self.reports['nodes'] else 'disabled'}.\n"
+            f"Message forwarding to Meshtastic: {'enabled' if self.forwarding_enabled else 'disabled'}.\n"
+        )
+        return msg
 
-        action = args[0].lower()
-
-        if action not in ['on', 'off']:
-            msg = "Invalid argument. Use 'on' or 'off'."
-            await update.message.reply_text(escape_markdown(msg, version=2), parse_mode=ParseMode.MARKDOWN_V2)
-            return
-
-        self.reports['telemetry'] = (action == 'on')
-        msg = f"Telemetry reporting has been {'enabled' if self.reports['telemetry'] else 'disabled'}."
+    async def cmd_features(self, args: list[str], user_id: int, update: Update) -> None:
+        msg = self.format_features()
         await update.message.reply_text(escape_markdown(msg, version=2), parse_mode=ParseMode.MARKDOWN_V2)
 
-    async def cmd_location(self, args: list[str], user_id: int, update: Update) -> None:
+    async def cmd_enable(self, args: list[str], user_id: int, update: Update) -> None:
         if not args:
-            msg = f"Location reporting is currently {'enabled' if self.reports['location'] else 'disabled'}. Use /location <on|off> to change this."
+            msg = "No feature specified. Available features:\n"
+            msg += self.format_features()
             await update.message.reply_text(escape_markdown(msg, version=2), parse_mode=ParseMode.MARKDOWN_V2)
             return
 
-        action = args[0].lower()
+        match args[0].lower():
+            case 'telemetry':
+                self.reports['telemetry'] = True
+                msg = "Telemetry reporting has been enabled."
+            case 'location':
+                self.reports['location'] = True
+                msg = "Location reporting has been enabled."
+            case 'nodes':
+                self.reports['nodes'] = True
+                msg = "Nodes reporting has been enabled."
+            case 'forwarding':
+                self.forwarding_enabled = True
+                msg = "Message forwarding to Meshtastic has been enabled."
+            case _:
+                msg = "Invalid feature argument."
 
-        if action not in ['on', 'off']:
-            msg = "Invalid argument. Use 'on' or 'off'."
+        await update.message.reply_text(escape_markdown(msg, version=2), parse_mode=ParseMode.MARKDOWN_V2)
+
+    async def cmd_disable(self, args: list[str], user_id: int, update: Update) -> None:
+        if not args:
+            msg = "No feature specified. Available features:\n"
+            msg += self.format_features()
             await update.message.reply_text(escape_markdown(msg, version=2), parse_mode=ParseMode.MARKDOWN_V2)
             return
 
-        self.reports['location'] = (action == 'on')
-        msg = f"Location reporting has been {'enabled' if self.reports['location'] else 'disabled'}."
+        match args[0].lower():
+            case 'telemetry':
+                self.reports['telemetry'] = False
+                msg = "Telemetry reporting has been disabled."
+            case 'location':
+                self.reports['location'] = False
+                msg = "Location reporting has been disabled."
+            case 'nodes':
+                self.reports['nodes'] = False
+                msg = "Nodes reporting has been disabled."
+            case 'forwarding':
+                self.forwarding_enabled = False
+                msg = "Message forwarding to Meshtastic has been disabled."
+            case _:
+                msg = "Invalid feature argument."
+
         await update.message.reply_text(escape_markdown(msg, version=2), parse_mode=ParseMode.MARKDOWN_V2)
 
     async def cmd_status(self, args: list[str], user_id: int, update: Update) -> None:
         status: str = await self.get_status()
+        status += "\n\n*Features:*\n" + self.format_features()
         await update.message.reply_text(status, parse_mode=ParseMode.MARKDOWN_V2)
 
     async def cmd_bell(self, args: list[str], user_id: int, update: Update) -> None:
@@ -477,7 +514,8 @@ class MessageProcessor:
             'hwModel': node_info.get('user', {}).get('hwModel', 'unknown')
         })
         info_text: str = self.node_manager.format_node_info(node_id)
-        await self.telegram.send_or_edit_message('nodeinfo', node_id, info_text)
+        if self.reports.get('nodes', True):
+            await self.telegram.send_or_edit_message('nodeinfo', node_id, info_text)
 
     async def handle_position_app(self, packet: MeshtasticPacket) -> None:
         position = packet['decoded'].get('position', {})

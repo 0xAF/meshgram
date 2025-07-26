@@ -29,8 +29,9 @@ class TelegramInterface:
             'status': {'description': 'Check the current status', 'handler': self.handle_command},
             'bell': {'description': 'Send a bell to the meshtastic user', 'handler': self.handle_command},
             'node': {'description': 'Get information about a specific node', 'handler': self.handle_command},
-            'telemetry': {'description': 'Enable/Disable Telemetry reports', 'handler': self.handle_command},
-            'location': {'description': 'Enable/Disable Location reports', 'handler': self.handle_command},
+            'enable': {'description': 'Enable a feature', 'handler': self.handle_command},
+            'disable': {'description': 'Disable a feature', 'handler': self.handle_command},
+            'features': {'description': 'List features', 'handler': self.handle_command},
         }
         self.is_polling: bool = False
 
@@ -229,7 +230,7 @@ class TelegramInterface:
         args = context.args or []
         user_id = update.effective_user.id
         
-        if not self.is_user_authorized(user_id) and command not in ['start', 'help', 'user']:
+        if not self.is_user_authorized(user_id) and command not in ['start', 'help', 'user', 'node', 'status', 'features']:
             await update.message.reply_text(
                 escape_markdown("You are not authorized to use this command.", version=2),
                 parse_mode=ParseMode.MARKDOWN_V2

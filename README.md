@@ -47,9 +47,10 @@ Connect your Meshtastic mesh network with Telegram group chats! 📡💬
    ```yaml
    telegram:
      bot_token: "your_bot_token_here"
-     chat_id: -1001234567890
+     chat_id: -1001234567890 
      authorized_users:
        - 123456789
+     enable_message_forwarding: False # enable/disable message forwarding from telegram to meshtastic default_node_id
 
    meshtastic:
      connection_type: "serial"  # or "tcp"

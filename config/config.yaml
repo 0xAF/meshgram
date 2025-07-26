@@ -8,6 +8,7 @@ telegram:
   chat_id: "-1111111111111"
   authorized_users:
     - 1111111111
+  enable_message_forwarding: False # forward messages from the chat to the meshtastic network
 
 meshtastic:
   connection_type: 'serial'  # 'serial' or 'tcp'
@@ -26,6 +27,7 @@ channels:
 reports:
   telemetry: False
   location: False
+  nodes: True
 
 logging:
   level: 'info'

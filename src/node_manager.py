@@ -203,7 +203,9 @@ class NodeManager:
         )
 
     def escape_node_id(self, node_id: str) -> str:
-        return escape_markdown(node_id, version=2)
+        escaped = escape_markdown(node_id, version=2)
+        escaped = escaped.replace("\\!", "!")
+        return escaped
 
     def escape_value(self, value: Any) -> str:
         # First, escape special Markdown characters
