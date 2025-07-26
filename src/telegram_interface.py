@@ -146,6 +146,8 @@ class TelegramInterface:
             return None
         try:
             escaped_text = escape_markdown(text, version=2)
+            escaped_text = escaped_text.replace('<i\\>', '_').replace('</i\\>', '_')
+            escaped_text = escaped_text.replace('<b\\>', '*').replace('</b\\>', '*')
             message = await self.bot.send_message(
                 chat_id=self.chat_id,
                 disable_notification=disable_notification,

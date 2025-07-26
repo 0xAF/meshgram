@@ -114,8 +114,9 @@ class MeshtasticInterface:
 
         self.logger.info(f"Attempting to send message to Meshtastic: {text=}")
         try:
-            self.logger.debug(f"Sending message to Meshtastic with {recipient=}")
-            result = await asyncio.to_thread(self.interface.sendText, text, destinationId=recipient)
+            channel = self.config.get('meshtastic.default_channel_id', 0)
+            self.logger.debug(f"Sending message to Meshtastic {channel=} with {recipient=}")
+            result = await asyncio.to_thread(self.interface.sendText, text, destinationId=recipient, channelIndex=channel)
             self.logger.info(f"Message sent to Meshtastic: {text=}")
             self.logger.debug(f"{result=}")
         except Exception as e:

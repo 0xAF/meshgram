@@ -144,25 +144,28 @@ class MessageProcessor:
         sender, recipient = packet.get('fromId', 'unknown'), packet.get('toId', 'unknown')
         channels = self.config.get('channels', [])
 
+
         formatted_name = sender
         node = self.node_manager.nodes.get(sender)
         if node:
             short_name = node.get('shortName', '')
             long_name = node.get('longName', '')
             if short_name:
-                formatted_name += f" ({short_name})"
+                formatted_name += f" - {short_name}"
             if long_name:
-                formatted_name += f" ({long_name})"
+                formatted_name += f" - {long_name}"
 
         channelStr = ""
-        if channels and (channel_num := packet.get('channel', 0)) is not None:
+        if channels and (channel_num := packet.get('channel', 0)) is not None and not recipient.startswith('!'):
             try:
                 channel_name = channels[int(channel_num)]
-                channelStr = f"[{channel_name}]:"
+                channelStr = f"[{channel_name}]: "
             except (ValueError, IndexError, TypeError):
-                channelStr = f"[CH{channel_num}]:"
+                channelStr = f"[CH{channel_num}]: "
 
-        message: str = f"📡 Meshtastic: {formatted_name} → {recipient}\n💬 {channelStr} {text}"
+        print(f"packet={packet}")
+        hops_away = packet.get('hopStart', 0) - packet.get('hopLimit', 0)
+        message: str = f"📡 <b>{formatted_name}</b> → <b>{recipient}</b>\n💬 <b>{channelStr}</b>{text}\n<i>↔️ Hops Away: {hops_away}</i>"
         self.logger.info(f"Sending Meshtastic message to Telegram: {message=}")
         await self.telegram.send_message(message, disable_notification=False)
 
