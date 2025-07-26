@@ -57,6 +57,10 @@ Connect your Meshtastic mesh network with Telegram group chats! 📡💬
      device: "/dev/ttyUSB0"  # or "hostname:port" for TCP
      default_node_id: "!abcdef12" # or "^all"
      default_channel_id: 0 # the mesh channel id to send the messages to
+     ignored_channels: # channels to ignore (do not send them to telegram)
+       - 0
+       - 1
+       - 2
      local_nodes:
        - "!abcdef12"
        - "!12345678"

@@ -16,6 +16,10 @@ meshtastic:
   #default_node_id: '!da73e1bc'
   default_node_id: '^all' # where to send the telegram messages
   # default_channel_id: 0 # default channel to use for sending messages
+  # ignored_channels: # channels to ignore
+    # - 0
+    # - 1
+    # - 2
   heartbeat_timeout: 300 # timeout in seconds for node heartbeats
   #local_nodes:
   #  - '!ba66fc64'

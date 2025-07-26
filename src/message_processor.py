@@ -143,7 +143,12 @@ class MessageProcessor:
         text: str = packet['decoded']['payload'].decode('utf-8')
         sender, recipient = packet.get('fromId', 'unknown'), packet.get('toId', 'unknown')
         channels = self.config.get('channels', [])
+        ignored_channels = self.config.get('meshtastic.ignored_channels', [])
+        channel_num = packet.get('channel', 0)
 
+        if channel_num in ignored_channels:
+            self.logger.info(f"Channel {channel_num} is in ignored_channels, skipping message.")
+            return
 
         formatted_name = sender
         node = self.node_manager.nodes.get(sender)
@@ -156,14 +161,13 @@ class MessageProcessor:
                 formatted_name += f" - {long_name}"
 
         channelStr = ""
-        if channels and (channel_num := packet.get('channel', 0)) is not None and not recipient.startswith('!'):
+        if channels and channel_num is not None and not recipient.startswith('!'):
             try:
                 channel_name = channels[int(channel_num)]
                 channelStr = f"[{channel_name}]: "
             except (ValueError, IndexError, TypeError):
                 channelStr = f"[CH{channel_num}]: "
 
-        print(f"packet={packet}")
         hops_away = packet.get('hopStart', 0) - packet.get('hopLimit', 0)
         message: str = f"📡 <b>{formatted_name}</b> → <b>{recipient}</b>\n💬 <b>{channelStr}</b>{text}\n<i>↔️ Hops Away: {hops_away}</i>"
         self.logger.info(f"Sending Meshtastic message to Telegram: {message=}")
