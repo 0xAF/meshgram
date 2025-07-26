@@ -64,7 +64,7 @@ class MessageProcessor:
             'location': config.get('reports.location', True),
             'nodes': config.get('reports.nodes', True),
         }
-        self.forwarding_enabled: bool = config.get('meshtastic.enable_message_forwarding', False)
+        self.forwarding_enabled: bool = config.get('telegram.enable_message_forwarding', False)
 
     async def process_messages(self) -> None:
         self.processing_tasks = [
