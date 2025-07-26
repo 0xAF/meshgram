@@ -8,18 +8,18 @@ telegram:
   chat_id: "-1111111111111"
   authorized_users:
     - 1111111111
-  enable_message_forwarding: False # forward messages from the chat to the meshtastic network
+  enable_message_forwarding: False # forward messages from telegram to the meshtastic network
 
 meshtastic:
   connection_type: 'serial'  # 'serial' or 'tcp'
   device: "/dev/ttyACM0" # for serial connection
   #default_node_id: '!da73e1bc'
   default_node_id: '^all' # where to send the telegram messages
-  # default_channel_id: 0 # default channel to use for sending messages
-  # ignored_channels: # channels to ignore
-    # - 0
-    # - 1
-    # - 2
+  #default_channel_id: 0 # meshtastic channel send the telegram messages to
+  #ignored_channels: # channels to ignore (do not send them to telegram)
+  #  - 0
+  #  - 1
+  #  - 2
   heartbeat_timeout: 300 # timeout in seconds for node heartbeats
   #local_nodes:
   #  - '!ba66fc64'
