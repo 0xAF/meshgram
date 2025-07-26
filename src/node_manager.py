@@ -84,10 +84,12 @@ class NodeManager:
             'batteryLevel': '🔋', 'voltage': '⚡', 'channelUtilization': '📊',
             'airUtilTx': '📡', 'temperature': '🌡️', 'relativeHumidity': '💧',
             'barometricPressure': '🌪️', 'gasResistance': '💨', 'current': '⚡',
-            'last_updated': '🕒'
+            'last_updated': '🕒', 'uptimeSeconds': '⏱️'
         }
         
         for key, value in node.items():
+            if key == 'uptimeSeconds':
+                value = self._format_uptime(value)
             if key == 'last_updated':
                 value = self._format_date(value)
             elif key in ['channelUtilization', 'airUtilTx']:
