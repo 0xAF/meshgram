@@ -26,12 +26,13 @@ meshtastic:
   #local_nodes:
   #  - '!ba66fc64'
 
+# Name the channels
 channels:
   - 'LongFast'
   - 'Bulgaria'
 
 reports:
-  telemetry: False
+  telemetry: True
   location: False
   nodes: True
 

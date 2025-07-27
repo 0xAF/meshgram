@@ -5,8 +5,8 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="meshgram",
-    version="0.1.0",
-    author="Tom Hensel",
+    version="0.2.0",
+    author="Tom Hensel, Stanislav Lechev",
     author_email="robot@jitter.eu",
     description="A bridge between Meshtastic and Telegram for message and location sharing",
     long_description=long_description,

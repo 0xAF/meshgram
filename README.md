@@ -12,7 +12,7 @@ Connect your Meshtastic mesh network with Telegram group chats! 📡💬
 - 🗺️ Location sharing between Telegram and Meshtastic
 - 🔐 User authorization for Telegram commands
 - 📝 Optional logging to file and syslog
-- Caches learned nodes to nodes.json
+- Cache learned nodes to nodes.json
 
 ## 🛠 Requirements
 
@@ -56,15 +56,16 @@ Connect your Meshtastic mesh network with Telegram group chats! 📡💬
    meshtastic:
      connection_type: "serial"  # or "tcp"
      device: "/dev/ttyUSB0"  # or "hostname:port" for TCP
-     default_node_id: "!abcdef12" # or "^all"
+     #default_node_id: "!abcdef12" # or "^all"
+     default_node_id: "^all"
      default_channel_id: 0 # the mesh channel id to send the messages to
-     ignored_channels: # channels to ignore (do not send them to telegram)
-       - 0
-       - 1
-       - 2
-     local_nodes:
-       - "!abcdef12"
-       - "!12345678"
+     #ignored_channels: # channels to ignore (do not send them to telegram)
+     #  - 0
+     #  - 1
+     #  - 2
+     #local_nodes:
+     #  - "!abcdef12"
+     #  - "!12345678"
 
    reports:
       telemetry: True
