@@ -107,8 +107,9 @@ Connect your Meshtastic mesh network with Telegram group chats! 📡💬
 - `/bell [node_id]` - Send a bell notification to a Meshtastic node
 - `/node [node_id]` - Get information about a specific node
 - `/user` - Get information about your Telegram user
-- `/telemetry <on|off>` - Enable/Disable Telemetry reporting
-- `/location <on|off>` - Enable/Disable Location reporting
+- `/enable <feature>` - Enable a feature
+- `/disable <feature>` - Disable a feature
+- `/features` - Show features status
 
 ## 🤝 Contributing
 
