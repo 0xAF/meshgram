@@ -44,3 +44,6 @@ ENV/
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+nodes.json
+

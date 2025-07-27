@@ -51,6 +51,7 @@ Connect your Meshtastic mesh network with Telegram group chats! 📡💬
      authorized_users:
        - 123456789
      enable_message_forwarding: False # enable/disable message forwarding from telegram to meshtastic default_node_id
+     use_topics: False # map meshtastic channels to different topics in Telegram
 
    meshtastic:
      connection_type: "serial"  # or "tcp"
@@ -72,6 +73,15 @@ Connect your Meshtastic mesh network with Telegram group chats! 📡💬
    channels:
       - "LongFast" # 0
       - "MySecondaryChannel" # 1
+
+   # set the message_thread_id for each topic
+   # read this https://stackoverflow.com/a/75178418/420585 to learn how to get the message_thread_id
+   topics:
+     telemetry: 907
+     location: 909
+     nodes: 918
+     channel0: 914
+     channel1: 911
 
    logging:
      level: "info"

@@ -27,6 +27,7 @@ class TelegramMessage(TypedDict):
     text: NotRequired[str]
     sender: NotRequired[str]
     message_id: NotRequired[int]
+    thread_id: NotRequired[int]
     user_id: NotRequired[int]
     command: NotRequired[str]
     args: NotRequired[list[str]]
@@ -120,7 +121,7 @@ class MessageProcessor:
                 self.logger.info(f"Handling Meshtastic message type {portnum=} from {packet.get('fromId')=}")
                 await handler(packet)
             else:
-                self.logger.warning(f"Unhandled Meshtastic message type: {portnum=} from: {packet.get('fromId')=}")
+                self.logger.warning(f"Unhandled Meshtastic message type: {portnum=} from: {packet.get('fromId')=} packet: {packet}")
 
     async def handle_ack(self, packet: Dict[str, Any]) -> None:
         message_id = packet.get('id')
@@ -160,8 +161,11 @@ class MessageProcessor:
             if long_name:
                 formatted_name += f" - {long_name}"
 
+        topic = "default"
+
         channelStr = ""
         if channels and channel_num is not None and not recipient.startswith('!'):
+            topic = "channel"+str(channel_num)
             try:
                 channel_name = channels[int(channel_num)]
                 channelStr = f"[{channel_name}]: "
@@ -169,12 +173,14 @@ class MessageProcessor:
                 channelStr = f"[CH{channel_num}]: "
 
         hops_away = packet.get('hopStart', 0) - packet.get('hopLimit', 0)
-        message: str = f"📡 <b>{formatted_name}</b> → <b>{recipient}</b>\n💬 <b>{channelStr}</b>{text}\n<i>↔️ Hops Away: {hops_away}</i>"
-        self.logger.info(f"Sending Meshtastic message to Telegram: {message=}")
-        await self.telegram.send_message(message, disable_notification=False)
+        message: str = f"📟 <b>{formatted_name}</b> → <b>{recipient}</b>\n💬 <b>{channelStr}</b>{text}\n<i>↔️ Hops Away: {hops_away}</i>"
+        
+        self.logger.info(f"Sending Meshtastic message to Telegram {topic=}: {message=}")
+        await self.telegram.send_message(message, disable_notification=False, topic=topic)
 
     async def handle_telegram_text(self, message: Dict[str, Any]) -> None:
         if not self.forwarding_enabled:
+            self.logger.info("Message forwarding to Meshtastic is disabled, skipping Telegram text message.")
             return
 
         self.logger.info(f"Handling Telegram text message: {message}")
@@ -182,22 +188,34 @@ class MessageProcessor:
         recipient = self.config.get('meshtastic.default_node_id')
         text = message['text']
         telegram_message_id = message['message_id']
+        telegram_thread_id = message['thread_id']
         
         meshtastic_message = f"[TG:{sender}] {text}"
+        channel = None
+        
+        use_topics = self.config.get('telegram.use_topics', False)
+        if use_topics:
+            topics = self.config.get('topics', {})
+            for key, value in topics.items():
+                if key.startswith('channel') and value == telegram_thread_id:
+                    channel = key.split('channel')[-1]
+                    break
+
         self.logger.info(f"Preparing to send Telegram message to Meshtastic: {meshtastic_message}")
         try:
-            meshtastic_message_id = await self.meshtastic.send_message(meshtastic_message, recipient)
-            self.logger.info(f"Successfully sent message to Meshtastic: {meshtastic_message}")
-            
-            self.pending_acks[meshtastic_message_id] = {
-                'telegram_message_id': telegram_message_id,
-                'timestamp': datetime.now(timezone.utc)
-            }
-            
-            asyncio.create_task(self.remove_pending_ack(meshtastic_message_id))
+           meshtastic_message_id = await self.meshtastic.send_message(meshtastic_message, recipient, channel=channel)
+           self.logger.info(f"Successfully sent message to Meshtastic {channel=}: {meshtastic_message}")
+           
+           self.pending_acks[meshtastic_message_id] = {
+               'telegram_message_id': telegram_message_id,
+               'telegram_thread_id': telegram_thread_id,
+               'timestamp': datetime.now(timezone.utc)
+           }
+           
+           asyncio.create_task(self.remove_pending_ack(meshtastic_message_id))
         except Exception as e:
-            self.logger.error(f"Failed to send message to Meshtastic: {e}", exc_info=True)
-            await self.telegram.send_message("Failed to send message to Meshtastic. Please try again.")
+           self.logger.error(f"Failed to send message to Meshtastic: {e}", exc_info=True)
+           await self.telegram.send_message("Failed to send message to Meshtastic. Please try again.", topic=telegram_thread_id)
 
     async def remove_pending_ack(self, message_id: str) -> None:
         await asyncio.sleep(self.ack_timeout)
@@ -536,7 +554,10 @@ class MessageProcessor:
         longitude = position.get('longitudeI', 0) / 1e7
         if latitude != 0 and longitude != 0:
             if self.reports.get('location', True):
-                await self.telegram.bot.send_location(chat_id=self.telegram.chat_id, latitude=latitude, longitude=longitude)
+                t = self.telegram.get_topic_id('location')
+                await self.telegram.bot.send_location(chat_id=self.telegram.chat_id, latitude=latitude, longitude=longitude,
+                    **{ 'message_thread_id': t } if t != 1 else {},
+                )
 
     async def handle_telemetry_app(self, packet: MeshtasticPacket) -> None:
         node_id = packet.get('fromId', 'unknown')

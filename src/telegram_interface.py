@@ -98,6 +98,7 @@ class TelegramInterface:
             'sender': update.effective_user.username or update.effective_user.first_name,
             'type': 'telegram',
             'message_id': update.message.message_id,
+            'thread_id': update.message.message_thread_id,
             'user_id': update.effective_user.id
         })
 
@@ -126,21 +127,36 @@ class TelegramInterface:
                 'original_message_id': update.message.reply_to_message.message_id
             })
 
+    def get_topic_id(self, topic: str) -> int:
+        use_topics = self.config.get('telegram.use_topics', False)
+        topics = self.config.get('topics', {})
+        if use_topics and topic != "default":
+            if isinstance(topic, int) or isinstance(topic, str) and topic.isnumeric():
+                return int(topic)
+            if topic in topics:
+                return int(topics[topic])
+        return 1
+    
     async def send_or_edit_message(self, message_type: str, node_id: str, content: str) -> None:
         message_key = f"{message_type}:{node_id}"
+        match message_type:
+            case 'nodeinfo':
+                topic = 'nodes'
+            case _:
+                topic = message_type
         if message_key in self.last_messages:
             success = await self.edit_message(self.last_messages[message_key], content)
             if not success:
                 # If editing fails, send a new message
-                message_id = await self.send_message(content)
+                message_id = await self.send_message(text=content, topic=topic)
                 if message_id:
                     self.last_messages[message_key] = message_id
         else:
-            message_id = await self.send_message(content)
+            message_id = await self.send_message(text=content, topic=topic)
             if message_id:
                 self.last_messages[message_key] = message_id
 
-    async def send_message(self, text: str, disable_notification: bool = False) -> int | None:
+    async def send_message(self, text: str, disable_notification: bool = False, topic = "default") -> int | None:
         if self.bot is None or self.chat_id is None:
             self.logger.error("Bot or chat_id not initialized")
             return None
@@ -148,8 +164,11 @@ class TelegramInterface:
             escaped_text = escape_markdown(text, version=2)
             escaped_text = escaped_text.replace('<i\\>', '_').replace('</i\\>', '_')
             escaped_text = escaped_text.replace('<b\\>', '*').replace('</b\\>', '*')
+            t = self.get_topic_id(topic)
+
             message = await self.bot.send_message(
                 chat_id=self.chat_id,
+                **{ 'message_thread_id': t } if t != 1 else {},
                 disable_notification=disable_notification,
                 disable_web_page_preview=True,
                 parse_mode=ParseMode.MARKDOWN_V2,
@@ -177,6 +196,9 @@ class TelegramInterface:
             if "Message to edit not found" in str(e):
                 self.logger.warning(f"Message {message_id} not found for editing. Will send as new message.")
                 return False
+            if "Message is not modified: " in str(e):
+                self.logger.info(f"Message {message_id} is not modified, no edit needed.")
+                return True
             else:
                 self.logger.error(f"BadRequest error when editing message: {e}", exc_info=True)
                 return False

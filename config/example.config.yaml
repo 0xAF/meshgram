@@ -9,10 +9,12 @@ telegram:
   authorized_users:
     - 1111111111
   enable_message_forwarding: False # forward messages from telegram to the meshtastic network
+  use_topics: False # map meshtastic channels to different topics in Telegram
 
 meshtastic:
   connection_type: 'serial'  # 'serial' or 'tcp'
   device: "/dev/ttyACM0" # for serial connection
+  #device: "192.168.0.100:4403" # for serial connection
   #default_node_id: '!da73e1bc'
   default_node_id: '^all' # where to send the telegram messages
   #default_channel_id: 0 # meshtastic channel send the telegram messages to
@@ -32,6 +34,15 @@ reports:
   telemetry: False
   location: False
   nodes: True
+
+# set the message_thread_id for each topic
+# read this https://stackoverflow.com/a/75178418/420585 to learn how to get the message_thread_id
+topics:
+  telemetry: 907
+  location: 909
+  nodes: 918
+  channel0: 914
+  channel1: 911
 
 logging:
   level: 'info'

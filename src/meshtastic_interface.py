@@ -106,7 +106,7 @@ class MeshtasticInterface:
         except Exception as e:
             self.logger.error(f"Error sending reaction to Meshtastic: {e=}", exc_info=True)
 
-    async def send_message(self, text: str, recipient: str) -> None:
+    async def send_message(self, text: str, recipient: str, channel = None ) -> None:
         if not text or not recipient:
             raise ValueError("Text and recipient must not be empty")
         if len(text) > 230:  # Meshtastic message size limit
@@ -114,10 +114,11 @@ class MeshtasticInterface:
 
         self.logger.info(f"Attempting to send message to Meshtastic: {text=}")
         try:
-            channel = self.config.get('meshtastic.default_channel_id', 0)
+            if channel is None:
+                channel = self.config.get('meshtastic.default_channel_id', 0)
             self.logger.debug(f"Sending message to Meshtastic {channel=} with {recipient=}")
-            result = await asyncio.to_thread(self.interface.sendText, text, destinationId=recipient, channelIndex=channel)
-            self.logger.info(f"Message sent to Meshtastic: {text=}")
+            result = await asyncio.to_thread(self.interface.sendText, text, destinationId=recipient, channelIndex=int(channel))
+            self.logger.info(f"Message sent to Meshtastic {channel=}: {text=}")
             self.logger.debug(f"{result=}")
         except Exception as e:
             self.logger.error(f"Error sending message to Meshtastic: {e=}", exc_info=True)
