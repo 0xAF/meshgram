@@ -353,10 +353,10 @@ class MessageProcessor:
 
     def format_features(self) -> str:
         msg = (
-            f"Telemetry reporting: {'enabled' if self.reports['telemetry'] else 'disabled'}.\n"
-            f"Location reporting: {'enabled' if self.reports['location'] else 'disabled'}.\n"
-            f"Nodes reporting: {'enabled' if self.reports['nodes'] else 'disabled'}.\n"
-            f"Message forwarding to Meshtastic: {'enabled' if self.forwarding_enabled else 'disabled'}.\n"
+            f"Telemetry reporting: {'✅ enabled' if self.reports['telemetry'] else '❌ disabled'}.\n"
+            f"Location reporting: {'✅ enabled' if self.reports['location'] else '❌ disabled'}.\n"
+            f"Nodes reporting: {'✅ enabled' if self.reports['nodes'] else '❌ disabled'}.\n"
+            f"Message forwarding to Meshtastic: {'✅ enabled' if self.forwarding_enabled else '❌ disabled'}.\n"
         )
         return msg
 
@@ -416,7 +416,7 @@ class MessageProcessor:
 
     async def cmd_status(self, args: list[str], user_id: int, update: Update) -> None:
         status: str = await self.get_status()
-        status += "\n\n*Features:*\n" + self.format_features()
+        status += "\n\n*Features:*\n" + escape_markdown(self.format_features(), version=2)
         await update.message.reply_text(status, parse_mode=ParseMode.MARKDOWN_V2)
 
     async def cmd_bell(self, args: list[str], user_id: int, update: Update) -> None:
