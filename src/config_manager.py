@@ -86,10 +86,28 @@ class SensitiveFormatter(logging.Formatter):
             (re.compile(r'(https://api\.telegram\.org/bot)([A-Za-z0-9:_-]{35,})(/\w+)'), r'\1[redacted]\3')
         ]
 
+    grey = "\x1b[38;20m"
+    yellow = "\x1b[33;20m"
+    blue = "\x1b[34;20m"
+    red = "\x1b[31;20m"
+    bold_red = "\x1b[31;1m"
+    reset = "\x1b[0m"
+
     def format(self, record: logging.LogRecord) -> str:
         message = super().format(record)
         for pattern, replacement in self.sensitive_patterns:
             message = pattern.sub(replacement, message)
+        match record.levelno:
+            case logging.DEBUG:
+                message = f"{self.grey}{message}{self.reset}"
+            case logging.INFO:
+                message = f"{self.blue}{message}{self.reset}"
+            case logging.WARNING:
+                message = f"{self.yellow}{message}{self.reset}"
+            case logging.ERROR:
+                message = f"{self.red}{message}{self.reset}"
+            case logging.CRITICAL:
+                message = f"{self.bold_red}{message}{self.reset}"
         return message
 
 def get_logger(name: str) -> logging.Logger:

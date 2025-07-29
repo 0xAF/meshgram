@@ -7,6 +7,7 @@ from telegram.constants import ParseMode
 from telegram.helpers import escape_markdown
 from telegram.error import BadRequest
 from config_manager import ConfigManager, get_logger
+import re
 
 class CommandData(TypedDict):
     description: str
@@ -162,8 +163,12 @@ class TelegramInterface:
             return None
         try:
             escaped_text = escape_markdown(text, version=2)
+            # unescape custom formatting
             escaped_text = escaped_text.replace('<i\\>', '_').replace('</i\\>', '_')
             escaped_text = escaped_text.replace('<b\\>', '*').replace('</b\\>', '*')
+            # Convert markdown links: [text](url)
+            escaped_text = re.sub(r'\\\[([^\]]+)\\\]\\\(([^)]+)\\\)', r'[\1](\2)', escaped_text)
+            # print(f"---------- Sending message to topic '{topic}':\n{escaped_text}")
             t = self.get_topic_id(topic)
 
             message = await self.bot.send_message(
@@ -176,7 +181,10 @@ class TelegramInterface:
             )
             return message.message_id
         except Exception as e:
-            self.logger.error(f"Failed to send Telegram message: {e}", exc_info=True)
+            if "Timed out" in str(e):
+                self.logger.error(f"TimedOut sending Telegram message: {e}")
+            else:
+                self.logger.error(f"Failed to send Telegram message: {e}", exc_info=True)
             return None
 
     async def edit_message(self, message_id: int, text: str) -> bool:
@@ -193,7 +201,13 @@ class TelegramInterface:
             )
             return True
         except BadRequest as e:
+            if "Timed out" in str(e):
+                self.logger.error(f"TimedOut sending Telegram message: {e}")
+                return False
             if "Message to edit not found" in str(e):
+                self.logger.warning(f"Message {message_id} not found for editing. Will send as new message.")
+                return False
+            if 'BadRequest error when editing message':
                 self.logger.warning(f"Message {message_id} not found for editing. Will send as new message.")
                 return False
             if "Message is not modified: " in str(e):

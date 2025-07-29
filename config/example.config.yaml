@@ -23,6 +23,8 @@ meshtastic:
   #  - 1
   #  - 2
   heartbeat_timeout: 300 # timeout in seconds for node heartbeats
+  commands:
+    ping: True # /ping command to get your hop count and node id back
   #local_nodes:
   #  - '!ba66fc64'
 

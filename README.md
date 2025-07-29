@@ -13,6 +13,7 @@ Connect your Meshtastic mesh network with Telegram group chats! 📡💬
 - 🔐 User authorization for Telegram commands
 - 📝 Optional logging to file and syslog
 - Cache learned nodes to nodes.json
+- Respond to /ping command from mestastic node
 
 ## 🛠 Requirements
 
@@ -59,6 +60,8 @@ Connect your Meshtastic mesh network with Telegram group chats! 📡💬
      #default_node_id: "!abcdef12" # or "^all"
      default_node_id: "^all"
      default_channel_id: 0 # the mesh channel id to send the messages to
+     commands:
+       ping: True # /ping command to get your hop count and node id back
      #ignored_channels: # channels to ignore (do not send them to telegram)
      #  - 0
      #  - 1

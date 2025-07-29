@@ -4,13 +4,14 @@ import asyncio
 from typing import TypedDict, Literal, Protocol, Any, NotRequired
 from collections.abc import Awaitable
 from datetime import datetime, timezone, timedelta
-from telegram import Update
+from telegram import Update, LinkPreviewOptions
 from telegram.constants import ParseMode
 from telegram.helpers import escape_markdown
 from meshtastic_interface import MeshtasticInterface
 from telegram_interface import TelegramInterface
 from config_manager import ConfigManager, get_logger
 from node_manager import NodeManager
+import re
 
 class CommandHandler(Protocol):
     async def __call__(self, args: list[str], user_id: int, update: Update) -> None:
@@ -45,6 +46,9 @@ class Reports(TypedDict):
     location: bool
     nodes: bool
 
+class MeshCommands(TypedDict):
+    ping: bool
+
 class MessageProcessor:
     def __init__(self, meshtastic: MeshtasticInterface, telegram: TelegramInterface, config: ConfigManager) -> None:
         self.config: ConfigManager = config
@@ -64,6 +68,9 @@ class MessageProcessor:
             'telemetry': config.get('reports.telemetry', True),
             'location': config.get('reports.location', True),
             'nodes': config.get('reports.nodes', True),
+        }
+        self.mesh_commands: MeshCommands = {
+            'ping': config.get('meshtastic.commands.ping', False),
         }
         self.forwarding_enabled: bool = config.get('telegram.enable_message_forwarding', False)
 
@@ -121,12 +128,13 @@ class MessageProcessor:
                 self.logger.info(f"Handling Meshtastic message type {portnum=} from {packet.get('fromId')=}")
                 await handler(packet)
             else:
-                self.logger.warning(f"Unhandled Meshtastic message type: {portnum=} from: {packet.get('fromId')=} packet: {packet}")
+                self.logger.warning(f"Unhandled Meshtastic message type: {portnum=} from: {packet.get('fromId')=}, packet:\n{packet}")
 
     async def handle_ack(self, packet: Dict[str, Any]) -> None:
         message_id = packet.get('id')
         if message_id is None:
-            self.logger.warning("Received ACK without message ID")
+            # self.logger.warning("Received ACK without message ID")
+            # print(f"Received ACK without message ID:\n{packet}\n")
             return
 
         pending_message = self.pending_acks.pop(message_id, None)
@@ -144,10 +152,10 @@ class MessageProcessor:
         text: str = packet['decoded']['payload'].decode('utf-8')
         sender, recipient = packet.get('fromId', 'unknown'), packet.get('toId', 'unknown')
         channels = self.config.get('channels', [])
-        ignored_channels = self.config.get('meshtastic.ignored_channels', [])
         channel_num = packet.get('channel', 0)
+        ignored_channels = self.config.get('meshtastic.ignored_channels', [])
 
-        if channel_num in ignored_channels:
+        if channel_num in ignored_channels and not text.startswith('/ping'):
             self.logger.info(f"Channel {channel_num} is in ignored_channels, skipping message.")
             return
 
@@ -156,9 +164,9 @@ class MessageProcessor:
         if node:
             short_name = node.get('shortName', '')
             long_name = node.get('longName', '')
-            if short_name:
+            if short_name and isinstance(short_name, str) and short_name.strip() and short_name.lower() != "unknown":
                 formatted_name += f" - {short_name}"
-            if long_name:
+            if long_name and isinstance(long_name, str) and long_name.strip() and long_name.lower() != "unknown":
                 formatted_name += f" - {long_name}"
 
         topic = "default"
@@ -172,9 +180,56 @@ class MessageProcessor:
             except (ValueError, IndexError, TypeError):
                 channelStr = f"[CH{channel_num}]: "
 
-        hops_away = packet.get('hopStart', 0) - packet.get('hopLimit', 0)
-        message: str = f"📟 <b>{formatted_name}</b> → <b>{recipient}</b>\n💬 <b>{channelStr}</b>{text}\n<i>↔️ Hops Away: {hops_away}</i>"
+        hops_start = packet.get('hopStart', 0)
+        hops_limit = packet.get('hopLimit', 0)
+        hops_away = hops_start - hops_limit
+        snr = packet.get('rxSnr', 'n/a')
+        rssi = packet.get('rxRssi', 'n/a')
+        relay_node = packet.get('relayNode', 'n/a')
+        signal = "n/a"
+        if snr != 'n/a' and isinstance(snr, (int, float)):
+            if snr < -15:
+                signal = "😣 Bad"
+            elif snr >= -15:
+                signal = "😐 Fair"
+            elif snr > 0:
+                signal = "🙂 Good"
+        if isinstance(relay_node, int):
+            relay_node = f"{relay_node:02x}"
+        message: str = f"📟 <b>{formatted_name}</b> → <b>{recipient}</b>\n💬 <b>{channelStr}</b>{text}\n<i>↔️ Hops Away: {hops_away}"
+        if hops_limit > 0:
+            message += f", HL: {hops_limit}"
+        if rssi != 'n/a':
+            message += f", RSSI: {rssi}"
+        if snr != 'n/a':
+            message += f", SNR: {snr}"
+        if signal != 'n/a':
+            message += f", Signal: {signal}"
+        if rssi == 'n/a' and snr == 'n/a':
+            message += " (MQTT)"
+        message += f"</i>"
         
+        if self.mesh_commands.get('ping', False) and text.startswith('/ping'):
+            self.logger.info(f"Received ping command from {sender} to {recipient} on channel {channel_num}")
+            message = f"{formatted_name} → HopsAway={hops_away}, HS={hops_start}, HL={hops_limit}"
+            if rssi != 'n/a':
+                message += f", RSSI={rssi}"
+            if snr != 'n/a':
+                message += f", SNR={snr}"
+            if signal != 'n/a':
+                message += f", Signal={signal}"
+            if relay_node != 'n/a':
+                message += f", LastRelayEndsWith={relay_node}"
+            if rssi == 'n/a' and snr == 'n/a':
+                message += " (MQTT)"
+            # print(f"------------\n{packet}\n------------\n")
+            try:
+                await self.meshtastic.send_message(message, recipient, channel=channel_num)
+                self.logger.info(f"Successfully sent message to Meshtastic {channel_num=}: {message}")
+            except Exception as e:
+                self.logger.error(f"Failed to send message to Meshtastic: {e}", exc_info=True)
+            message = "Replying to ping command:\n" + message
+
         self.logger.info(f"Sending Meshtastic message to Telegram {topic=}: {message=}")
         await self.telegram.send_message(message, disable_notification=False, topic=topic)
 
@@ -353,22 +408,29 @@ class MessageProcessor:
 
     def format_features(self) -> str:
         msg = (
-            f"Telemetry reporting: {'✅ enabled' if self.reports['telemetry'] else '❌ disabled'}.\n"
-            f"Location reporting: {'✅ enabled' if self.reports['location'] else '❌ disabled'}.\n"
-            f"Nodes reporting: {'✅ enabled' if self.reports['nodes'] else '❌ disabled'}.\n"
-            f"Message forwarding to Meshtastic: {'✅ enabled' if self.forwarding_enabled else '❌ disabled'}.\n"
+            f"[<b>telemetry</b>] reporting: {'✅ enabled' if self.reports['telemetry'] else '❌ disabled'}.\n"
+            f"[<b>location</b>] reporting: {'✅ enabled' if self.reports['location'] else '❌ disabled'}.\n"
+            f"[<b>nodes</b>] reporting: {'✅ enabled' if self.reports['nodes'] else '❌ disabled'}.\n"
+            f"message [<b>forwarding</b>] to Meshtastic: {'✅ enabled' if self.forwarding_enabled else '❌ disabled'}.\n"
+            f"mesh command [<b>/ ping</b>]: {'✅ enabled' if self.mesh_commands['ping'] else '❌ disabled'}.\n"
         )
         return msg
 
     async def cmd_features(self, args: list[str], user_id: int, update: Update) -> None:
         msg = self.format_features()
-        await update.message.reply_text(escape_markdown(msg, version=2), parse_mode=ParseMode.MARKDOWN_V2)
+        msg = escape_markdown(msg, version=2)
+        msg = msg.replace('<i\\>', '_').replace('</i\\>', '_')
+        msg = msg.replace('<b\\>', '*').replace('</b\\>', '*')
+        await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN_V2)
 
     async def cmd_enable(self, args: list[str], user_id: int, update: Update) -> None:
         if not args:
             msg = "No feature specified. Available features:\n"
             msg += self.format_features()
-            await update.message.reply_text(escape_markdown(msg, version=2), parse_mode=ParseMode.MARKDOWN_V2)
+            msg = escape_markdown(msg, version=2)
+            msg = msg.replace('<i\\>', '_').replace('</i\\>', '_')
+            msg = msg.replace('<b\\>', '*').replace('</b\\>', '*')
+            await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN_V2)
             return
 
         match args[0].lower():
@@ -384,6 +446,9 @@ class MessageProcessor:
             case 'forwarding':
                 self.forwarding_enabled = True
                 msg = "Message forwarding to Meshtastic has been enabled."
+            case 'ping':
+                self.mesh_commands['ping'] = True
+                msg = "Meshtastic command / ping has been enabled."
             case _:
                 msg = "Invalid feature argument."
 
@@ -393,7 +458,10 @@ class MessageProcessor:
         if not args:
             msg = "No feature specified. Available features:\n"
             msg += self.format_features()
-            await update.message.reply_text(escape_markdown(msg, version=2), parse_mode=ParseMode.MARKDOWN_V2)
+            msg = escape_markdown(msg, version=2)
+            msg = msg.replace('<i\\>', '_').replace('</i\\>', '_')
+            msg = msg.replace('<b\\>', '*').replace('</b\\>', '*')
+            await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN_V2)
             return
 
         match args[0].lower():
@@ -409,6 +477,9 @@ class MessageProcessor:
             case 'forwarding':
                 self.forwarding_enabled = False
                 msg = "Message forwarding to Meshtastic has been disabled."
+            case 'ping':
+                self.mesh_commands['ping'] = False
+                msg = "Meshtastic command / ping has been disabled."
             case _:
                 msg = "Invalid feature argument."
 
@@ -417,6 +488,8 @@ class MessageProcessor:
     async def cmd_status(self, args: list[str], user_id: int, update: Update) -> None:
         status: str = await self.get_status()
         status += "\n\n*Features:*\n" + escape_markdown(self.format_features(), version=2)
+        status = status.replace('<i\\>', '_').replace('</i\\>', '_')
+        status = status.replace('<b\\>', '*').replace('</b\\>', '*')
         await update.message.reply_text(status, parse_mode=ParseMode.MARKDOWN_V2)
 
     async def cmd_bell(self, args: list[str], user_id: int, update: Update) -> None:
@@ -452,7 +525,9 @@ class MessageProcessor:
         sensor_info: str = self.node_manager.get_node_sensor_info(node_id)
         
         full_info: str = f"{node_info}\n\n{telemetry_info}\n\n{position_info}\n\n{routing_info}\n\n{neighbor_info}\n\n{sensor_info}"
-        await update.message.reply_text(escape_markdown(full_info, version=2), parse_mode=ParseMode.MARKDOWN_V2)
+        full_info = escape_markdown(full_info, version=2)
+        full_info = re.sub(r'\\\[([^\]]+)\\\]\\\(([^)]+)\\\)', r'[\1](\2)', full_info)  # Fix Markdown escaping
+        await update.message.reply_text(full_info, parse_mode=ParseMode.MARKDOWN_V2, link_preview_options=LinkPreviewOptions(is_disabled=True))
 
     async def cmd_user(self, args: list[str], user_id: int, update: Update) -> None:
         user = update.effective_user

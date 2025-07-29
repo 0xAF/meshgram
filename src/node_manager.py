@@ -68,7 +68,7 @@ class NodeManager:
             else int(node_id) if isinstance(node_id, str)
             else node_id
         )
-        return f'[{self.escape_value(node_id)} ({self.escape_value(short_name)})](https://meshmap.net/#{numeric_id})'
+        return f'{self.escape_value(node_id)} ({self.escape_value(short_name)}) <[Map](https://meshmap.net/#{numeric_id})>'
 
     def format_node_info(self, node_id: str) -> str:
         node = self.get_node(node_id)
