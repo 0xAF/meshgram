@@ -107,12 +107,13 @@ Connect your Meshtastic mesh network with Telegram group chats! 📡💬
 - `/start` - Start the bot and see available commands
 - `/help` - Show help message
 - `/status` - Check the current status of Meshgram and Meshtastic
-- `/bell [node_id]` - Send a bell notification to a Meshtastic node
 - `/node [node_id]` - Get information about a specific node
+- `/bell [node_id]` - Send a bell notification to a Meshtastic node
 - `/user` - Get information about your Telegram user
 - `/enable <feature>` - Enable a feature
 - `/disable <feature>` - Disable a feature
 - `/features` - Show features status
+- `/listnodes` - List known nodes
 
 ## 🤝 Contributing
 

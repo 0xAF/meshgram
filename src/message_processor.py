@@ -159,15 +159,18 @@ class MessageProcessor:
             self.logger.info(f"Channel {channel_num} is in ignored_channels, skipping message.")
             return
 
-        formatted_name = sender
+        formatted_name = f"`{sender}`"
         node = self.node_manager.nodes.get(sender)
         if node:
             short_name = node.get('shortName', '')
             long_name = node.get('longName', '')
             if short_name and isinstance(short_name, str) and short_name.strip() and short_name.lower() != "unknown":
-                formatted_name += f" - {short_name}"
+                # formatted_name += f" - {short_name}"
+                short_name = short_name.strip()
+            else:
+                short_name = sender
             if long_name and isinstance(long_name, str) and long_name.strip() and long_name.lower() != "unknown":
-                formatted_name += f" - {long_name}"
+                formatted_name += f" - `{long_name}`"
 
         topic = "default"
 
@@ -176,9 +179,9 @@ class MessageProcessor:
             topic = "channel"+str(channel_num)
             try:
                 channel_name = channels[int(channel_num)]
-                channelStr = f"[{channel_name}]: "
+                channelStr = f"[<u>{channel_name}</u>]"
             except (ValueError, IndexError, TypeError):
-                channelStr = f"[CH{channel_num}]: "
+                channelStr = f"[<u>CH{channel_num}</u>]"
 
         hops_start = packet.get('hopStart', 0)
         hops_limit = packet.get('hopLimit', 0)
@@ -192,21 +195,21 @@ class MessageProcessor:
                 signal = "😣 Bad"
             elif snr >= -15:
                 signal = "😐 Fair"
-            elif snr > 0:
+            if snr > -5:
                 signal = "🙂 Good"
         if isinstance(relay_node, int):
             relay_node = f"{relay_node:02x}"
-        message: str = f"📟 <b>{formatted_name}</b> → <b>{recipient}</b>\n💬 <b>{channelStr}</b>{text}\n<i>↔️ Hops Away: {hops_away}"
+        message: str = f"💬 <b>{channelStr} <u>{short_name}</u>: </b>{text}\n📟 {formatted_name} → `{recipient}`\n<i>↔️ Hops Away: `{hops_away}`"
         if hops_limit > 0:
-            message += f", HL: {hops_limit}"
+            message += f", HL: `{hops_limit}`"
         if rssi != 'n/a':
-            message += f", RSSI: {rssi}"
+            message += f", RSSI: `{rssi}`"
         if snr != 'n/a':
-            message += f", SNR: {snr}"
+            message += f", SNR: `{snr}`"
         if signal != 'n/a':
-            message += f", Signal: {signal}"
+            message += f", Signal: `{signal}`"
         if rssi == 'n/a' and snr == 'n/a':
-            message += " (MQTT)"
+            message += " (`MQTT`)"
         message += f"</i>"
         
         if self.mesh_commands.get('ping', False) and text.startswith('/ping'):
@@ -395,14 +398,15 @@ class MessageProcessor:
             "/start - Start the bot and see welcome message\n"
             "/help - Show this help message\n"
             "/user - Get information about your Telegram user\n"
+            "/node [node_id] - Get information about a specific node\n"
+            "/status - Check the current status of Meshgram and Meshtastic\n"
             "\n"
             "Admin commands:\n"
-            "/status - Check the current status of Meshgram and Meshtastic\n"
             "/bell [node_id] - Send a bell notification to a Meshtastic node\n"
-            "/node [node_id] - Get information about a specific node\n"
             "/enable <feature> - Enable a feature\n"
             "/disable <feature> - Disable a feature\n"
             "/features - List features\n"
+            "/listnodes - List all nodes in the mesh network\n"
         )
         await update.message.reply_text(escape_markdown(help_text, version=2), parse_mode=ParseMode.MARKDOWN_V2)
 
@@ -517,6 +521,8 @@ class MessageProcessor:
         if not node_id:
             await update.message.reply_text("No node ID provided and no default node ID set.")
             return
+        if not node_id.startswith('!'):
+            node_id = f'!{node_id}'
         node_info: str = self.node_manager.format_node_info(node_id)
         telemetry_info: str = self.node_manager.get_node_telemetry(node_id)
         position_info: str = self.node_manager.get_node_position(node_id)
@@ -528,6 +534,16 @@ class MessageProcessor:
         full_info = escape_markdown(full_info, version=2)
         full_info = re.sub(r'\\\[([^\]]+)\\\]\\\(([^)]+)\\\)', r'[\1](\2)', full_info)  # Fix Markdown escaping
         await update.message.reply_text(full_info, parse_mode=ParseMode.MARKDOWN_V2, link_preview_options=LinkPreviewOptions(is_disabled=True))
+
+    async def cmd_listnodes(self, args: list[str], user_id: int, update: Update) -> None:
+        nodes = self.node_manager.get_all_nodes()
+        if not nodes:
+            await update.message.reply_text("No nodes found in the mesh network.")
+            return
+
+        node_list = "\n".join(f"{node_id}: {node.get('shortName', 'Unknown')} - {node.get('longName', 'Unknown')}" for node_id, node in nodes.items())
+        node_list = escape_markdown(node_list, version=2)
+        await update.message.reply_text(f"Known Nodes:\n{node_list}", parse_mode=ParseMode.MARKDOWN_V2)
 
     async def cmd_user(self, args: list[str], user_id: int, update: Update) -> None:
         user = update.effective_user

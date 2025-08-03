@@ -33,6 +33,7 @@ class TelegramInterface:
             'enable': {'description': 'Enable a feature', 'handler': self.handle_command},
             'disable': {'description': 'Disable a feature', 'handler': self.handle_command},
             'features': {'description': 'List features', 'handler': self.handle_command},
+            'listnodes': {'description': 'List all known nodes', 'handler': self.handle_command},
         }
         self.is_polling: bool = False
 
@@ -166,6 +167,8 @@ class TelegramInterface:
             # unescape custom formatting
             escaped_text = escaped_text.replace('<i\\>', '_').replace('</i\\>', '_')
             escaped_text = escaped_text.replace('<b\\>', '*').replace('</b\\>', '*')
+            escaped_text = escaped_text.replace('<u\\>', '__').replace('</u\\>', '__')
+            escaped_text = escaped_text.replace('\\`', '`')
             # Convert markdown links: [text](url)
             escaped_text = re.sub(r'\\\[([^\]]+)\\\]\\\(([^)]+)\\\)', r'[\1](\2)', escaped_text)
             # print(f"---------- Sending message to topic '{topic}':\n{escaped_text}")
