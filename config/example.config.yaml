@@ -14,6 +14,8 @@ telegram:
 meshtastic:
   connection_type: 'serial'  # 'serial' or 'tcp'
   device: "/dev/ttyACM0" # for serial connection
+  node_info_link: "https://meshmap.net/#{node_id}" # link to node info page, {node_id} will be replaced with the actual node id
+  # node_info_link: "https://malla.varna.radio/node/{node_id}" # link to node info page, {node_id} will be replaced with the actual node id
   #device: "192.168.0.100:4403" # for serial connection
   #default_node_id: '!da73e1bc'
   default_node_id: '^all' # where to send the telegram messages

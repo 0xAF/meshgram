@@ -41,7 +41,7 @@ class MeshtasticInterface:
         self.last_telemetry: Dict[str, Any] = {}
         self.max_retries: int = 3
         self.retry_interval: int = 60
-        self.node_manager: NodeManager = NodeManager()
+        self.node_manager: NodeManager = NodeManager(config)
         self.is_setup: bool = False
         self.is_closing: bool = False
 

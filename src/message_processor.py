@@ -543,7 +543,8 @@ class MessageProcessor:
 
         node_list = "\n".join(f"{node_id}: {node.get('shortName', 'Unknown')} - {node.get('longName', 'Unknown')}" for node_id, node in nodes.items())
         node_list = escape_markdown(node_list, version=2)
-        await update.message.reply_text(f"Known Nodes:\n{node_list}", parse_mode=ParseMode.MARKDOWN_V2)
+        node_list = f"*Known Nodes \\({len(nodes)}\\):*\n" + node_list
+        await update.message.reply_text(node_list, parse_mode=ParseMode.MARKDOWN_V2)
 
     async def cmd_user(self, args: list[str], user_id: int, update: Update) -> None:
         user = update.effective_user

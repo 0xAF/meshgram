@@ -28,7 +28,8 @@ class NodeData(TypedDict):
     sensor: Dict[str, Any]
 
 class NodeManager:
-    def __init__(self) -> None:
+    def __init__(self, config: ConfigManager) -> None:
+        self.config: ConfigManager = config
         self.logger = get_logger(__name__)
         self.nodes: Dict[str, NodeData] = {}
         self.node_history: Dict[str, List[NodeData]] = {}
@@ -68,7 +69,9 @@ class NodeManager:
             else int(node_id) if isinstance(node_id, str)
             else node_id
         )
-        return f'{self.escape_value(node_id)} ({self.escape_value(short_name)}) <[Map](https://meshmap.net/#{numeric_id})>'
+        node_info_link = self.config.get('meshtastic.node_info_link', 'https://meshmap.net/#{node_id}')
+        node_info_link = node_info_link.replace("{node_id}", str(numeric_id))
+        return f'[{self.escape_value(node_id)}]({node_info_link}) ({self.escape_value(short_name)})'
 
     def format_node_info(self, node_id: str) -> str:
         node = self.get_node(node_id)
@@ -180,7 +183,7 @@ class NodeManager:
             return f"📊 No telemetry available for node {self.escape_node_id(node_id)}"
         
         short_name = node.get('shortName', 'unknown')
-        formatted_name = self.format_node_name_no_map(node_id, short_name)
+        formatted_name = self.format_node_name(node_id, short_name)
 
         battery_level = node.get('batteryLevel', 'N/A')
         battery_str = "PWR" if battery_level == 101 else f"{battery_level}%"
