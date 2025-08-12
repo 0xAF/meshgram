@@ -95,7 +95,8 @@ class MeshtasticInterface:
             'type': 'ack',
             'from': packet.get('fromId'),
             'to': packet.get('toId'),
-            'message_id': packet.get('id')
+            'message_id': packet.get('id'),
+            'request_id': packet.get('decoded', {}).get('requestId'),
         }
         self.loop.call_soon_threadsafe(self.message_queue.put_nowait, ack_data)
 
@@ -106,7 +107,7 @@ class MeshtasticInterface:
         except Exception as e:
             self.logger.error(f"Error sending reaction to Meshtastic: {e=}", exc_info=True)
 
-    async def send_message(self, text: str, recipient: str, channel = None ) -> None:
+    async def send_message(self, text: str, recipient: str, channel = None ) -> int:
         if not text or not recipient:
             raise ValueError("Text and recipient must not be empty")
         if len(text) > 230:  # Meshtastic message size limit
@@ -120,17 +121,20 @@ class MeshtasticInterface:
             result = await asyncio.to_thread(self.interface.sendText, text, destinationId=recipient, channelIndex=int(channel))
             self.logger.info(f"Message sent to Meshtastic {channel=}: {text=}")
             self.logger.debug(f"{result=}")
+            return result.id  # Return the message ID for tracking
         except Exception as e:
             self.logger.error(f"Error sending message to Meshtastic: {e=}", exc_info=True)
             self.pending_messages.append(PendingMessage(text, recipient))
+            return -1  # Indicate failure to send
 
-    async def send_bell(self, dest_id: str) -> None:
+    async def send_bell(self, dest_id: str) -> int:
         if not dest_id:
             raise ValueError("Destination ID must not be empty")
 
         try:
-            await asyncio.to_thread(self.interface.sendText, "🔔", destinationId=dest_id)
+            result = await asyncio.to_thread(self.interface.sendText, "🔔", destinationId=dest_id)
             self.logger.info(f"Bell (text message) sent to node {dest_id}")
+            return result.id  # Return the message ID for tracking
         except Exception as e:
             self.logger.error(f"Error sending bell to node {dest_id}: {e}", exc_info=True)
             raise
