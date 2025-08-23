@@ -216,7 +216,7 @@ class MessageProcessor:
         
         if self.mesh_commands.get('ping', False) and text.startswith('/ping'):
             self.logger.info(f"Received ping command from {sender} to {recipient} on channel {channel_num}")
-            message = f"{formatted_name} → HopsAway={hops_away}, HS={hops_start}, HL={hops_limit}"
+            message = f"{formatted_name} → HopsAway={hops_away}, HStart={hops_start}, HLimit={hops_limit}"
             if rssi != 'n/a':
                 message += f", RSSI={rssi}"
             if snr != 'n/a':
@@ -228,6 +228,11 @@ class MessageProcessor:
             if rssi == 'n/a' and snr == 'n/a':
                 message += " (MQTT)"
             # print(f"------------\n{packet}\n------------\n")
+
+            # if it is a direct message to us, reply to sender instead
+            if recipient == self.meshtastic.my_node_id:
+                recipient = sender
+
             try:
                 meshtastic_message_id = await self.meshtastic.send_message(message, recipient, channel=channel_num)
                 self.pending_acks[meshtastic_message_id] = {

@@ -47,6 +47,7 @@ class MeshtasticInterface:
         self.node_manager: NodeManager = NodeManager(config)
         self.is_setup: bool = False
         self.is_closing: bool = False
+        self.my_node_id: str = ""
 
     async def setup(self) -> None:
         self.logger.info("Setting up meshtastic interface...")
@@ -79,6 +80,7 @@ class MeshtasticInterface:
         try:
             my_node_info: NodeInfo = await asyncio.to_thread(self.interface.getMyNodeInfo)
             node_id = my_node_info['user'].get('id')
+            self.my_node_id = node_id if node_id else ""
             if node_id:
                 self.logger.info(f"Received info on our node: {my_node_info=}")
             else:
