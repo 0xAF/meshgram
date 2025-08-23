@@ -683,7 +683,12 @@ class MessageProcessor:
         return "PWR" if battery_level == 101 else f"{battery_level}%"
 
     async def handle_store_forward_app(self, _packet: Dict[str, Any]) -> None:
+        return
         self.logger.info("Ignoring Store & Forward app packet as it is not supported in this implementation.")
+
+    async def handle_range_test_app(self, _packet: Dict[str, Any]) -> None:
+        return
+        self.logger.info("Ignoring Range Test app packet as it is not supported in this implementation.")
 
     async def handle_nodeinfo_app(self, packet: Dict[str, Any]) -> None:
         node_id: str = packet.get('fromId', 'unknown')
@@ -736,7 +741,7 @@ class MessageProcessor:
         elif 'getRingtoneResponse' in admin_message:
             self.logger.debug(f"(This is used for HEALTH CHECK) Received ringtone response: {admin_message['getRingtoneResponse']}")
         else:
-            self.logger.warning(f"Received unexpected admin message: {admin_message}")
+            self.logger.warning(f"Received unexpected admin message:\n{admin_message}")
 
     async def _handle_route_reply(self, admin_message: dict[str, Any], dest_id: str) -> None:
         route = admin_message['getRouteReply'].get('route', [])
