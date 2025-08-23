@@ -6,6 +6,7 @@ from telegram_interface import TelegramInterface
 from message_processor import MessageProcessor
 from config_manager import ConfigManager, get_logger
 from asyncio import Task
+import sys
 
 class Meshgram:
     def __init__(self, config: ConfigManager) -> None:
@@ -41,8 +42,10 @@ class Meshgram:
 
     async def shutdown(self) -> None:
         if self.is_shutting_down:
-            self.logger.info("Shutdown already in progress, skipping.")
-            return
+            self.logger.info("Shutdown already in progress, loading the timer to kill us.")
+            await asyncio.sleep(5)
+            self.logger.info("Timeout reached during shutdown, exiting.")
+            sys.exit(0)
 
         self.is_shutting_down = True
         self.logger.info("Shutting down meshgram...")
@@ -79,9 +82,17 @@ class Meshgram:
             asyncio.create_task(self.meshtastic.process_thread_safe_queue()),
             asyncio.create_task(self.meshtastic.process_pending_messages()),
             asyncio.create_task(self.telegram.start_polling()),
+            asyncio.create_task(self.meshtastic.periodic_health_check()),
         ]
         try:
             await asyncio.gather(*self.tasks)
+            # done, pending = await asyncio.wait(self.tasks, return_when=asyncio.FIRST_COMPLETED)
+            # for task in done:
+            #     result = await task
+            #     self.logger.info(f"Task {task.get_name() if hasattr(task, 'get_name') else str(task)} finished with result: {result}")
+            # # cancel the pending tasks
+            # for task in pending:
+            #     task.cancel()
         except asyncio.CancelledError:
             self.logger.info("Received cancellation signal.")
         except Exception as e:

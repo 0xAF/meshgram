@@ -126,10 +126,11 @@ class MessageProcessor:
             handler_name = f"handle_{portnum.lower()}" if isinstance(portnum, str) else f"handle_{portnum}"
             handler = getattr(self, handler_name, None)
             if handler:
-                self.logger.info(f"Handling Meshtastic message type {portnum=} from {packet.get('fromId')=}")
+                if not (portnum == 'ADMIN_APP' and 'getRingtoneResponse' in packet.get('decoded', {}).get('admin', {})):
+                    self.logger.info(f"Handling Meshtastic message type {portnum} from {packet.get('fromId')}")
                 await handler(packet)
             else:
-                self.logger.warning(f"Unhandled Meshtastic message type: {portnum=} from: {packet.get('fromId')=}, packet:\n{packet}")
+                self.logger.warning(f"Unhandled Meshtastic message type: {portnum} from: {packet.get('fromId')}, packet:\n{packet}")
 
     async def handle_ack(self, packet: Dict[str, Any]) -> None:
         message_id = packet.get('request_id') # or packet.get('decoded', {}).get('id')
@@ -725,6 +726,10 @@ class MessageProcessor:
             await self._handle_device_metrics(packet.get('fromId', 'unknown'), admin_message['deviceMetrics'])
         elif 'position' in admin_message:
             await self._handle_position(packet.get('fromId', 'unknown'), admin_message['position'])
+        elif 'getDeviceMetadataResponse' in admin_message:
+            self.logger.info(f"Received device metadata response: {admin_message['getDeviceMetadataResponse']}")
+        elif 'getRingtoneResponse' in admin_message:
+            self.logger.debug(f"(This is used for HEALTH CHECK) Received ringtone response: {admin_message['getRingtoneResponse']}")
         else:
             self.logger.warning(f"Received unexpected admin message: {admin_message}")
 

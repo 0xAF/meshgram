@@ -11,6 +11,9 @@ from meshtastic.tcp_interface import TCPInterface
 from pubsub import pub
 from config_manager import ConfigManager, get_logger
 from node_manager import NodeManager
+import socket
+import io
+import contextlib
 
 class DeviceMetrics(TypedDict):
     batteryLevel: int
@@ -212,16 +215,45 @@ class MeshtasticInterface:
         except Exception as e:
             self.logger.error(f"Failed to reconnect to Meshtastic: {e}", exc_info=True)
 
+    def getNodeInfo(self):
+        try:
+            output_capture = io.StringIO()
+            with contextlib.redirect_stdout(output_capture), contextlib.redirect_stderr(output_capture):
+                # self.interface.localNode.getMetadata()
+                self.interface.localNode.get_ringtone()
+
+            console_output = output_capture.getvalue()
+            if "ringtone:" in console_output:
+                return "OK"
+            return -1
+        except (socket.error, BrokenPipeError, ConnectionResetError, Exception) as e:
+            self.logger.error(f"Error retrieving node info: {e}")
+            raise e  # Propagate the error to handle reconnection
+
     async def periodic_health_check(self) -> None:
         while True:
-            try:
-                await asyncio.to_thread(self.interface.ping)
-            except Exception as e:
-                self.logger.error(f"Health check failed: {e}", exc_info=True)
+            self.logger.debug("Performing periodic health check...")
+            if self.interface is None:
+                self.logger.warning("Meshtastic interface is not initialized, attempting to reconnect...")
                 await self.reconnect()
-            await asyncio.sleep(60)  # Check every minute
+                continue
+            try:
+                info = await asyncio.wait_for(asyncio.to_thread(self.getNodeInfo), timeout=5)
+                if info == -1 or info is None:
+                    self.logger.error("Health check failed: Invalid or no node info received. Attempting to reconnect...")
+                    await self.reconnect()
+                    continue
+                self.logger.debug(f"Health check = {info}")
+            except Exception as e:
+                if isinstance(e, TimeoutError):
+                    self.logger.error("Health check failed: Timeout while retrieving node info.")
+                else:
+                    self.logger.error(f"Health check failed: {e}", exc_info=True)
+                await self.reconnect()
+            await asyncio.sleep(5)  # Check every X seconds
 
-    def start_background_tasks(self) -> None:
-        asyncio.create_task(self.process_pending_messages())
-        asyncio.create_task(self.process_thread_safe_queue())
-        asyncio.create_task(self.periodic_health_check())
+    # not used
+    # def start_background_tasks(self) -> None:
+    #    asyncio.create_task(self.process_pending_messages())
+    #    asyncio.create_task(self.process_thread_safe_queue())
+    #    asyncio.create_task(self.periodic_health_check())
