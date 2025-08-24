@@ -83,6 +83,7 @@ class Meshgram:
             asyncio.create_task(self.meshtastic.process_pending_messages()),
             asyncio.create_task(self.telegram.start_polling()),
             asyncio.create_task(self.meshtastic.periodic_health_check()),
+            asyncio.create_task(self.meshtastic.periodic_telemetry_report()),
         ]
         try:
             await asyncio.gather(*self.tasks)

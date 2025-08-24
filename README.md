@@ -87,6 +87,11 @@ Connect your Meshtastic mesh network with Telegram group chats! 📡💬
      channel0: 914
      channel1: 911
 
+   telemetry:
+     environment_enabled: False
+     environment_script: "./ha.sh"
+     environment_send_interval: 300  # in seconds, how often to send telemetry data
+
    logging:
      level: "info"
      level_telegram: "warn"

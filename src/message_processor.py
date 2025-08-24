@@ -125,9 +125,25 @@ class MessageProcessor:
             portnum = packet.get('decoded', {}).get('portnum', '')
             handler_name = f"handle_{portnum.lower()}" if isinstance(portnum, str) else f"handle_{portnum}"
             handler = getattr(self, handler_name, None)
+
+            sender = packet.get('fromId', 'unknown')
+            formatted_name = f"`{sender}`"
+            node = self.node_manager.nodes.get(sender)
+            short_name = sender
+            if node:
+                short_name = node.get('shortName', '')
+                long_name = node.get('longName', '')
+                if short_name and isinstance(short_name, str) and short_name.strip() and short_name.lower() != "unknown":
+                    short_name = short_name.strip()
+                else:
+                    short_name = sender
+                formatted_name += f" - `{short_name}`"
+                if long_name and isinstance(long_name, str) and long_name.strip() and long_name.lower() != "unknown":
+                    formatted_name += f" - `{long_name}`"
+
             if handler:
                 if not (portnum == 'ADMIN_APP' and 'getRingtoneResponse' in packet.get('decoded', {}).get('admin', {})):
-                    self.logger.info(f"Handling Meshtastic message type {portnum} from {packet.get('fromId')}")
+                    self.logger.info(f"Handling Meshtastic message type {portnum} from {formatted_name}")
                 await handler(packet)
             else:
                 self.logger.warning(f"Unhandled Meshtastic message type: {portnum} from: {packet.get('fromId')}, packet:\n{packet}")

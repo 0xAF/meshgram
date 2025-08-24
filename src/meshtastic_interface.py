@@ -14,6 +14,8 @@ from node_manager import NodeManager
 import socket
 import io
 import contextlib
+from meshtastic.protobuf import telemetry_pb2, portnums_pb2
+from meshtastic import BROADCAST_ADDR
 
 class DeviceMetrics(TypedDict):
     batteryLevel: int
@@ -254,6 +256,68 @@ class MeshtasticInterface:
                 await self.reconnect()
             await asyncio.sleep(5)  # Check every X seconds
 
+    async def periodic_telemetry_report(self) -> None:
+        telemetry_config = self.config.get('telemetry', {})
+        if not telemetry_config.get('environment_enabled', False):
+            self.logger.info("Environment telemetry reporting is disabled in the configuration.")
+            return
+
+        script_path = telemetry_config.get('environment_script', 'echo')
+        interval = telemetry_config.get('environment_send_interval', 300)
+
+        while True:
+            self.logger.debug("Running environment telemetry script...")
+            try:
+                process = await asyncio.create_subprocess_shell(
+                    script_path,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                stdout, stderr = await process.communicate()
+
+                if process.returncode != 0:
+                    self.logger.error(f"Telemetry script error (code {process.returncode}): {stderr.decode().strip()}")
+                else:
+                    output = stdout.decode().strip()
+                    self.logger.debug(f"Telemetry script output:\n{output}")
+                    # output:
+                    # voltage: 100
+                    # relative_humidity: 50.0
+                    # wind_speed: 3.0
+                    # wind_direction: 112.0
+                    # rainfall_24h: 144.0
+                    # uv_lux: 23.0
+                    # lux: 0
+                    # temperature: 18.8
+                    t = telemetry_pb2.Telemetry()
+                    for line in output.splitlines():
+                        if ':' in line:
+                            key, value = line.split(':', 1)
+                            key = key.strip()
+                            value = value.strip()
+                            if hasattr(t.environment_metrics, key):
+                                try:
+                                    field_type = type(getattr(t.environment_metrics, key))
+                                    if field_type == float:
+                                        setattr(t.environment_metrics, key, float(value))
+                                    elif field_type == int:
+                                        setattr(t.environment_metrics, key, int(float(value)))
+                                    else:
+                                        self.logger.warning(f"Unsupported telemetry field type for {key}: {field_type}")
+                                except ValueError as ve:
+                                    self.logger.error(f"Invalid value for {key}: {value} ({ve})")
+                            else:
+                                self.logger.warning(f"Unknown telemetry field: {key}")
+                    self.logger.info(f"Sending telemetry data...")
+                    self.logger.debug(f"Telemetry Data:\n{t}")
+                    self.interface.sendData(t, BROADCAST_ADDR, portnums_pb2.PortNum.TELEMETRY_APP)
+            except Exception as e:
+                self.logger.error(f"Error running telemetry script: {e}", exc_info=True)
+
+            await asyncio.sleep(interval)
+        
+        
+        
     # not used
     # def start_background_tasks(self) -> None:
     #    asyncio.create_task(self.process_pending_messages())
