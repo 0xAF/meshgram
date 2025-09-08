@@ -5,6 +5,8 @@ from datetime import datetime, timedelta
 from telegram.helpers import escape_markdown
 import json
 from config_manager import ConfigManager, get_logger
+from sqlitedict import SqliteDict
+import os
 
 class NodeData(TypedDict):
     shortName: str
@@ -31,29 +33,34 @@ class NodeManager:
     def __init__(self, config: ConfigManager) -> None:
         self.config: ConfigManager = config
         self.logger = get_logger(__name__)
-        self.nodes: Dict[str, NodeData] = {}
-        self.node_history: Dict[str, List[NodeData]] = {}
+        self.nodes: Dict[str, NodeData] = SqliteDict('cache.db', tablename="nodes", autocommit=True)
+        # self.node_history: Dict[str, List[NodeData]] = {}
         self.history_limit: int = 100
-        self.load_nodes()
+        self.migrate_nodes_from_old_cache()
         
-    def load_nodes(self):
-        self.logger.info("Loading nodes from nodes.json...")
+    def migrate_nodes_from_old_cache(self):
         try:
             with open('nodes.json', 'r') as f:
-                self.nodes = json.load(f)
-                for node_id, data in self.nodes.items():
+                self.logger.info("Migrating nodes from nodes.json to cache.db...")
+                migration_nodes = json.load(f)
+                for node_id, data in migration_nodes.items():
                     if 'last_updated' not in data:
                         data['last_updated'] = datetime.now().isoformat()
-                    if node_id not in self.node_history:
-                        self.node_history[node_id] = []
-                    self.node_history[node_id].append(data)
+                    if node_id not in self.nodes:
+                        self.nodes[node_id] = data
+                    # if node_id not in self.node_history:
+                        # self.node_history[node_id] = []
+                    # self.node_history[node_id].append(data)
+            f.close()
+            os.remove('nodes.json')
+            self.logger.info("Migration completed.")
         except FileNotFoundError:
             self.nodes = {}
-            self.node_history = {}
+            # self.node_history = {}
         except json.JSONDecodeError:
-            self.logger.warning("Error decoding JSON from nodes.json, starting with an empty node list.")
+            self.logger.warning("Error decoding JSON from nodes.json, skipping migration.")
             self.nodes = {}
-            self.node_history = {}
+            # self.node_history = {}
 
     def format_node_name_no_map(self, node_id: Union[str, int], short_name: str) -> str:
         numeric_id: int = (
@@ -121,17 +128,20 @@ class NodeManager:
     def update_node(self, node_id: str, data: Dict[str, Any]) -> None:
         if node_id not in self.nodes:
             self.nodes[node_id] = NodeData()
-            self.node_history[node_id] = []
+            # self.node_history[node_id] = []
         
-        self.nodes[node_id].update(data)
+        # self.nodes[node_id].update(data)
+        for key, value in data.items():
+            if self.nodes[node_id].get(key) != value:
+                self.nodes[node_id][key] = value
         self.nodes[node_id]['last_updated'] = datetime.now().isoformat()
 
-        with open('nodes.json', 'w') as f:
-            json.dump(self.nodes, f, indent=2)
+        # with open('nodes.json', 'w') as f:
+            # json.dump(self.nodes, f, indent=2)
         
-        self.node_history[node_id].append(self.nodes[node_id].copy())
-        if len(self.node_history[node_id]) > self.history_limit:
-            self.node_history[node_id].pop(0)
+        # self.node_history[node_id].append(self.nodes[node_id].copy())
+        # if len(self.node_history[node_id]) > self.history_limit:
+            # self.node_history[node_id].pop(0)
 
     def get_node(self, node_id: str) -> Optional[NodeData]:
         return self.nodes.get(node_id)
@@ -246,7 +256,7 @@ class NodeManager:
 
     def remove_node(self, node_id: str) -> None:
         self.nodes.pop(node_id, None)
-        self.node_history.pop(node_id, None)
+        # self.node_history.pop(node_id, None)
 
     def update_node_routing(self, node_id: str, routing_info: Dict[str, Any]) -> None:
         self.update_node(node_id, {'routing': routing_info})

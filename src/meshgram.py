@@ -7,6 +7,7 @@ from message_processor import MessageProcessor
 from config_manager import ConfigManager, get_logger
 from asyncio import Task
 import sys
+import os
 
 class Meshgram:
     def __init__(self, config: ConfigManager) -> None:
@@ -45,7 +46,8 @@ class Meshgram:
             self.logger.info("Shutdown already in progress, loading the timer to kill us.")
             await asyncio.sleep(5)
             self.logger.info("Timeout reached during shutdown, exiting.")
-            sys.exit(0)
+            os._exit(0)
+            # sys.exit(0)
 
         self.is_shutting_down = True
         self.logger.info("Shutting down meshgram...")

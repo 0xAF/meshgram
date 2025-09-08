@@ -55,6 +55,7 @@ class MeshtasticInterface:
         self.logger.info("Setting up meshtastic interface...")
         try:
             self.interface = await self._create_interface()
+            self.logger.debug(f"Meshtastic interface created:\n{self.interface.myInfo}")
             pub.subscribe(self.on_meshtastic_message, "meshtastic.receive")
             await self._fetch_node_info()
             self.is_setup = True
@@ -308,7 +309,7 @@ class MeshtasticInterface:
                                     self.logger.error(f"Invalid value for {key}: {value} ({ve})")
                             else:
                                 self.logger.warning(f"Unknown telemetry field: {key}")
-                    self.logger.info(f"Sending telemetry data...")
+                    self.logger.info(f"Sending telemetry data and sleeping for {interval} seconds...")
                     self.logger.debug(f"Telemetry Data:\n{t}")
                     self.interface.sendData(t, BROADCAST_ADDR, portnums_pb2.PortNum.TELEMETRY_APP)
             except Exception as e:

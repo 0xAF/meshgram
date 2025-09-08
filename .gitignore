@@ -24,6 +24,7 @@ wheels/
 
 # dotenv
 .envrc
+.env
 
 # Virtual environment
 venv/
@@ -46,4 +47,5 @@ ehthumbs.db
 Thumbs.db
 
 nodes.json
+cache.db*
 

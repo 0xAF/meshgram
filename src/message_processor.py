@@ -145,8 +145,10 @@ class MessageProcessor:
                 if not (portnum == 'ADMIN_APP' and 'getRingtoneResponse' in packet.get('decoded', {}).get('admin', {})):
                     self.logger.info(f"Handling Meshtastic message type {portnum} from {formatted_name}")
                 await handler(packet)
+            elif not portnum:
+                self.logger.info(f"Ignoring Private message from: {formatted_name}")
             else:
-                self.logger.warning(f"Unhandled Meshtastic message type: {portnum} from: {packet.get('fromId')}, packet:\n{packet}")
+                self.logger.warning(f"Unhandled Meshtastic message type: {portnum} from: {packet.get('fromId')} - {formatted_name}, packet:\n{packet}")
 
     async def handle_ack(self, packet: Dict[str, Any]) -> None:
         message_id = packet.get('request_id') # or packet.get('decoded', {}).get('id')
@@ -697,6 +699,10 @@ class MessageProcessor:
 
     def _get_battery_status(self, battery_level: int) -> str:
         return "PWR" if battery_level == 101 else f"{battery_level}%"
+
+    async def handle_traceroute_app(self, _packet: Dict[str, Any]) -> None:
+        return
+        self.logger.info("Ignoring Traceroute app packet as it is not supported in this implementation.")
 
     async def handle_store_forward_app(self, _packet: Dict[str, Any]) -> None:
         return
