@@ -55,11 +55,12 @@ class NodeManager:
             os.remove('nodes.json')
             self.logger.info("Migration completed.")
         except FileNotFoundError:
-            self.nodes = {}
+            self.logger.debug("No nodes.json file found, skipping migration.")
+            # self.nodes = {}
             # self.node_history = {}
         except json.JSONDecodeError:
             self.logger.warning("Error decoding JSON from nodes.json, skipping migration.")
-            self.nodes = {}
+            # self.nodes = {}
             # self.node_history = {}
 
     def format_node_name_no_map(self, node_id: Union[str, int], short_name: str) -> str:
@@ -131,10 +132,12 @@ class NodeManager:
             # self.node_history[node_id] = []
         
         # self.nodes[node_id].update(data)
+        node = self.nodes[node_id]
         for key, value in data.items():
-            if self.nodes[node_id].get(key) != value:
-                self.nodes[node_id][key] = value
-        self.nodes[node_id]['last_updated'] = datetime.now().isoformat()
+            if node.get(key) != value:
+                node[key] = value
+        node['last_updated'] = datetime.now().isoformat()
+        self.nodes[node_id] = node  # This triggers SqliteDict to persist the change
 
         # with open('nodes.json', 'w') as f:
             # json.dump(self.nodes, f, indent=2)

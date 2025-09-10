@@ -179,8 +179,11 @@ class MessageProcessor:
             return
 
         formatted_name = f"`{sender}`"
+        formatted_recipient = f"`{recipient}`"
         node = self.node_manager.nodes.get(sender)
+        node_recipient = self.node_manager.nodes.get(recipient)
         short_name = sender
+        short_name_recipient = recipient
         if node:
             short_name = node.get('shortName', '')
             long_name = node.get('longName', '')
@@ -191,6 +194,17 @@ class MessageProcessor:
                 short_name = sender
             if long_name and isinstance(long_name, str) and long_name.strip() and long_name.lower() != "unknown":
                 formatted_name += f" - `{long_name}`"
+
+        if node_recipient:
+            short_name_recipient = node_recipient.get('shortName', '')
+            long_name_recipient = node_recipient.get('longName', '')
+            if short_name_recipient and isinstance(short_name_recipient, str) and short_name_recipient.strip() and short_name_recipient.lower() != "unknown":
+                # formatted_name += f" - {short_name}"
+                short_name_recipient = short_name_recipient.strip()
+            else:
+                short_name_recipient = recipient
+            if long_name_recipient and isinstance(long_name_recipient, str) and long_name_recipient.strip() and long_name_recipient.lower() != "unknown":
+                formatted_recipient += f" - `{long_name_recipient}`"
 
         topic = "default"
 
@@ -209,6 +223,7 @@ class MessageProcessor:
         snr = packet.get('rxSnr', 'n/a')
         rssi = packet.get('rxRssi', 'n/a')
         relay_node = packet.get('relayNode', 'n/a')
+        mqtt = packet.get('viaMqtt', 0)
         signal = "n/a"
         if snr != 'n/a' and isinstance(snr, (int, float)):
             if snr < -15:
@@ -219,7 +234,7 @@ class MessageProcessor:
                 signal = "🙂 Good"
         if isinstance(relay_node, int):
             relay_node = f"{relay_node:02x}"
-        message: str = f"💬 <b>{channelStr} <u>{short_name}</u>: </b>{text}\n\n📟 {formatted_name} → `{recipient}`\n<i>↔️ Hops Away: `{hops_away}`"
+        message: str = f"💬 <b>{channelStr} <u>{short_name}</u>: </b>{text}\n\n📟 [{formatted_name}] → [{formatted_recipient}]\n<i>↔️ Hops Away: `{hops_away}`"
         if hops_limit > 0:
             message += f", HL: `{hops_limit}`"
         if rssi != 'n/a':
@@ -228,7 +243,7 @@ class MessageProcessor:
             message += f", SNR: `{snr}`"
         if signal != 'n/a':
             message += f", Signal: `{signal}`"
-        if rssi == 'n/a' and snr == 'n/a':
+        if mqtt:
             message += " (`MQTT`)"
         message += f"</i>"
         
@@ -243,7 +258,7 @@ class MessageProcessor:
                 message += f", Signal={signal}"
             if relay_node != 'n/a':
                 message += f", LastRelayEndsWith={relay_node}"
-            if rssi == 'n/a' and snr == 'n/a':
+            if mqtt:
                 message += " (MQTT)"
             # print(f"------------\n{packet}\n------------\n")
 
