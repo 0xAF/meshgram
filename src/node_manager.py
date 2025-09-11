@@ -87,7 +87,7 @@ class NodeManager:
             if key == 'uptimeSeconds':
                 value = self._format_uptime(value)
             if key == 'last_updated':
-                value = self._format_date(value)
+                value = self._format_date(str(value))
             elif key in ['channelUtilization', 'airUtilTx']:
                 value = self._format_percentage(value)
             elif key == 'shortName':
@@ -134,15 +134,27 @@ class NodeManager:
         return self.nodes
 
     # --- Node Updates ---
-    def update_node(self, node_id: str, data: Dict[str, Any]) -> None:
+    def update_node(self, node_id: str | None, data: Dict[str, Any]) -> None:
+        # Guard against missing/None node ids (observed KeyError None)
+        if not node_id or not isinstance(node_id, str) or node_id.strip() == '':
+            self.logger.warning(f"Ignoring update_node with invalid node_id={node_id!r}")
+            return
         if node_id not in self.nodes:
-            self.nodes[node_id] = NodeData()
+            # Initialize minimal NodeData structure
+            self.nodes[node_id] = NodeData(  # type: ignore[call-arg]
+                shortName='unknown', longName='unknown', hwModel='unknown',
+                batteryLevel=None, voltage=None, channelUtilization=None, airUtilTx=None,
+                temperature=None, relativeHumidity=None, barometricPressure=None,
+                gasResistance=None, current=None, latitude=None, longitude=None,
+                last_updated=datetime.now().isoformat(), last_position_update=None,
+                routing={}, neighbors={}, sensor={}
+            )
         node = self.nodes[node_id]
         for key, value in data.items():
-            if node.get(key) != value:
-                node[key] = value
-        node['last_updated'] = datetime.now().isoformat()
-        self.nodes[node_id] = node  # Reassign to persist changes
+            if node.get(key) != value:  # type: ignore[index]
+                node[key] = value  # type: ignore[index]
+        node['last_updated'] = datetime.now().isoformat()  # type: ignore[index]
+        self.nodes[node_id] = node  # persist
 
     def update_node_telemetry(self, node_id: str, telemetry_data: Dict[str, Any]) -> None:
         self.update_node(node_id, telemetry_data)
@@ -179,11 +191,17 @@ class NodeManager:
         latitude = node.get('latitude', 'N/A')
         longitude = node.get('longitude', 'N/A')
         last_position_update = node.get('last_position_update', 'N/A')
+        formatted_last = 'N/A'
+        if last_position_update not in (None, 'N/A'):
+            try:
+                formatted_last = self._format_date(str(last_position_update))
+            except Exception:
+                formatted_last = str(last_position_update)
         return (
             f"📍 Position for node {formatted_name}:\n"
             f"🌎 Latitude: {self.escape_value(latitude)}\n"
             f"🌍 Longitude: {self.escape_value(longitude)}\n"
-            f"🕒 Last updated: {self.escape_value(self._format_date(last_position_update) if last_position_update != 'N/A' else 'N/A')}"
+            f"🕒 Last updated: {self.escape_value(formatted_last)}"
         )
 
     def get_node_telemetry(self, node_id: str) -> str:
