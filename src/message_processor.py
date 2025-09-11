@@ -12,9 +12,10 @@ from config_manager import ConfigManager, get_logger
 from node_manager import NodeManager
 import re
 
+# --- Type Definitions ---
+
 class CommandHandler(Protocol):
-    async def __call__(self, args: list[str], user_id: int, update: Update) -> None:
-        ...
+    async def __call__(self, args: list[str], user_id: int, update: Update) -> None: ...
 
 class MeshtasticPacket(TypedDict):
     fromId: str
@@ -49,6 +50,8 @@ class Reports(TypedDict):
 class MeshCommands(TypedDict):
     ping: bool
 
+# --- Main Processor ---
+
 class MessageProcessor:
     def __init__(self, meshtastic: MeshtasticInterface, telegram: TelegramInterface, config: ConfigManager) -> None:
         self.config: ConfigManager = config
@@ -58,7 +61,6 @@ class MessageProcessor:
         self.telegram: TelegramInterface = telegram
         self.node_manager: NodeManager = meshtastic.node_manager
         self.start_time: datetime = datetime.now(timezone.utc)
-        # self.local_nodes: list[str] = config.get('meshtastic.local_nodes', [])
         self.is_closing: bool = False
         self.processing_tasks: list[asyncio.Task[Any]] = []
         self.message_id_map: dict[int, str] = {}
@@ -75,6 +77,8 @@ class MessageProcessor:
         }
         self.forwarding_enabled: bool = config.get('telegram.enable_message_forwarding', False)
 
+    # --- Main Message Loops ---
+
     async def process_messages(self) -> None:
         self.processing_tasks = [
             asyncio.create_task(self.process_meshtastic_messages()),
@@ -82,7 +86,7 @@ class MessageProcessor:
             asyncio.create_task(self.process_pending_acks())
         ]
         try:
-            _ = await asyncio.gather(*self.processing_tasks)
+            await asyncio.gather(*self.processing_tasks)
         except asyncio.CancelledError:
             self.logger.info("Message processing tasks cancelled.")
         finally:
@@ -116,42 +120,55 @@ class MessageProcessor:
                 self.logger.error(f"Error processing Telegram message: {e=}", exc_info=True)
             await asyncio.sleep(0.1)
 
+    async def process_pending_acks(self) -> None:
+        while True:
+            now = datetime.now(timezone.utc)
+            for message_id, data in list(self.pending_acks.items()):
+                if (now - data['timestamp']).total_seconds() > self.ack_timeout:
+                    self.logger.warning(f"ACK timeout for message ID: {message_id}")
+                    del self.pending_acks[message_id]
+            await asyncio.sleep(10)
+
+    # --- Meshtastic Message Handlers ---
+
     async def handle_meshtastic_message(self, packet: Dict[str, Any]) -> None:
         self.logger.debug(f"Received Meshtastic message: {packet=}")
-        
         if packet.get('type') == 'ack':
             await self.handle_ack(packet)
-        else:
-            portnum = packet.get('decoded', {}).get('portnum', '')
-            handler_name = f"handle_{portnum.lower()}" if isinstance(portnum, str) else f"handle_{portnum}"
-            handler = getattr(self, handler_name, None)
+            return
 
-            sender = packet.get('fromId', 'unknown')
-            formatted_name = f"`{sender}`"
-            node = self.node_manager.nodes.get(sender)
-            short_name = sender
-            if node:
-                short_name = node.get('shortName', '')
-                long_name = node.get('longName', '')
-                if short_name and isinstance(short_name, str) and short_name.strip() and short_name.lower() != "unknown":
-                    short_name = short_name.strip()
-                else:
-                    short_name = sender
-                formatted_name += f" - `{short_name}`"
-                if long_name and isinstance(long_name, str) and long_name.strip() and long_name.lower() != "unknown":
-                    formatted_name += f" - `{long_name}`"
+        portnum = packet.get('decoded', {}).get('portnum', '')
+        handler_name = f"handle_{portnum.lower()}" if isinstance(portnum, str) else f"handle_{portnum}"
+        handler = getattr(self, handler_name, None)
 
-            if handler:
-                if not (portnum == 'ADMIN_APP' and 'getRingtoneResponse' in packet.get('decoded', {}).get('admin', {})):
-                    self.logger.info(f"Handling Meshtastic message type {portnum} from {formatted_name}")
-                await handler(packet)
-            elif not portnum:
-                self.logger.info(f"Ignoring Private message from: {formatted_name}")
+        sender = packet.get('fromId', 'unknown')
+        formatted_name = f"`{sender}`"
+        node = self.node_manager.nodes.get(sender)
+        short_name = sender
+        if node:
+            short_name = node.get('shortName', '')
+            long_name = node.get('longName', '')
+            if short_name and isinstance(short_name, str) and short_name.strip() and short_name.lower() != "unknown":
+                short_name = short_name.strip()
             else:
-                self.logger.warning(f"Unhandled Meshtastic message type: {portnum} from: {packet.get('fromId')} - {formatted_name}, packet:\n{packet}")
+                short_name = sender
+            formatted_name += f" - `{short_name}`"
+            if long_name and isinstance(long_name, str) and long_name.strip() and long_name.lower() != "unknown":
+                formatted_name += f" - `{long_name}`"
+
+        if handler:
+            if not (portnum == 'ADMIN_APP' and 'getRingtoneResponse' in packet.get('decoded', {}).get('admin', {})):
+                self.logger.info(f"Handling Meshtastic message type {portnum} from {formatted_name}")
+            await handler(packet)
+        elif not portnum:
+            self.logger.info(f"Ignoring Private message from: {formatted_name}")
+        else:
+            self.logger.warning(
+                f"Unhandled Meshtastic message type: {portnum} from: {packet.get('fromId')} - {formatted_name}, packet:\n{packet}"
+            )
 
     async def handle_ack(self, packet: Dict[str, Any]) -> None:
-        message_id = packet.get('request_id') # or packet.get('decoded', {}).get('id')
+        message_id = packet.get('request_id')
         if message_id is None:
             self.logger.warning(f"Received ACK without message ID\n{packet=}\n")
             return
@@ -162,14 +179,11 @@ class MessageProcessor:
             if telegram_message_id:
                 await self.telegram.add_reaction(telegram_message_id, '👌')
                 self.logger.info(f"ACK processed for message ID: {message_id}, Telegram message ID: {telegram_message_id}")
-            # else:
-                # self.logger.warning(f"ACK received for message ID {message_id}, but no Telegram message ID found")
-        # else:
-            # self.logger.warning(f"Received ACK for unknown message ID: {message_id}")
 
     async def handle_text_message_app(self, packet: Dict[str, Any]) -> None:
         text: str = packet['decoded']['payload'].decode('utf-8')
-        sender, recipient = packet.get('fromId', 'unknown'), packet.get('toId', 'unknown')
+        sender = packet.get('fromId', 'unknown')
+        recipient = packet.get('toId', 'unknown')
         channels = self.config.get('channels', [])
         channel_num = packet.get('channel', 0)
         ignored_channels = self.config.get('meshtastic.ignored_channels', [])
@@ -184,11 +198,11 @@ class MessageProcessor:
         node_recipient = self.node_manager.nodes.get(recipient)
         short_name = sender
         short_name_recipient = recipient
+
         if node:
             short_name = node.get('shortName', '')
             long_name = node.get('longName', '')
             if short_name and isinstance(short_name, str) and short_name.strip() and short_name.lower() != "unknown":
-                # formatted_name += f" - {short_name}"
                 short_name = short_name.strip()
             else:
                 short_name = sender
@@ -199,7 +213,6 @@ class MessageProcessor:
             short_name_recipient = node_recipient.get('shortName', '')
             long_name_recipient = node_recipient.get('longName', '')
             if short_name_recipient and isinstance(short_name_recipient, str) and short_name_recipient.strip() and short_name_recipient.lower() != "unknown":
-                # formatted_name += f" - {short_name}"
                 short_name_recipient = short_name_recipient.strip()
             else:
                 short_name_recipient = recipient
@@ -207,10 +220,9 @@ class MessageProcessor:
                 formatted_recipient += f" - `{long_name_recipient}`"
 
         topic = "default"
-
         channelStr = ""
         if channels and channel_num is not None and not recipient.startswith('!'):
-            topic = "channel"+str(channel_num)
+            topic = "channel" + str(channel_num)
             try:
                 channel_name = channels[int(channel_num)]
                 channelStr = f"[<u>{channel_name}</u>]"
@@ -234,7 +246,12 @@ class MessageProcessor:
                 signal = "🙂 Good"
         if isinstance(relay_node, int):
             relay_node = f"{relay_node:02x}"
-        message: str = f"💬 <b>{channelStr} <u>{short_name}</u>: </b>{text}\n\n📟 [{formatted_name}] → [{formatted_recipient}]\n<i>↔️ Hops Away: `{hops_away}`"
+
+        message = (
+            f"💬 <b>{channelStr} <u>{short_name}</u>: </b>{text}\n\n"
+            f"📟 [{formatted_name}] → [{formatted_recipient}]\n"
+            f"<i>↔️ Hops Away: `{hops_away}`"
+        )
         if hops_limit > 0:
             message += f", HL: `{hops_limit}`"
         if rssi != 'n/a':
@@ -246,7 +263,7 @@ class MessageProcessor:
         if mqtt:
             message += " (`MQTT`)"
         message += f"</i>"
-        
+
         if self.mesh_commands.get('ping', False) and text.startswith('/ping'):
             self.logger.info(f"Received ping command from {sender} to {recipient} on channel {channel_num}")
             message = f"{formatted_name} → HopsAway={hops_away}, HStart={hops_start}, HLimit={hops_limit}"
@@ -260,12 +277,8 @@ class MessageProcessor:
                 message += f", LastRelayEndsWith={relay_node}"
             if mqtt:
                 message += " (MQTT)"
-            # print(f"------------\n{packet}\n------------\n")
-
-            # if it is a direct message to us, reply to sender instead
             if recipient == self.meshtastic.my_node_id:
                 recipient = sender
-
             try:
                 meshtastic_message_id = await self.meshtastic.send_message(message, recipient, channel=channel_num)
                 self.pending_acks[meshtastic_message_id] = {
@@ -281,59 +294,7 @@ class MessageProcessor:
         self.logger.info(f"Sending Meshtastic message to Telegram {topic=}: {message=}")
         _ = await self.telegram.send_message(message, disable_notification=False, topic=topic)
 
-    async def handle_telegram_text(self, message: Dict[str, Any]) -> None:
-        if not self.forwarding_enabled:
-            self.logger.info("Message forwarding to Meshtastic is disabled, skipping Telegram text message.")
-            return
-
-        self.logger.info(f"Handling Telegram text message: {message}")
-        sender = message['sender'][:10]
-        recipient = self.config.get('meshtastic.default_node_id')
-        text = message['text']
-        telegram_message_id = message['message_id']
-        telegram_thread_id = message['thread_id']
-        
-        meshtastic_message = f"[TG:{sender}] {text}"
-        channel = None
-        
-        use_topics = self.config.get('telegram.use_topics', False)
-        if use_topics:
-            topics = self.config.get('topics', {})
-            for key, value in topics.items():
-                if key.startswith('channel') and value == telegram_thread_id:
-                    channel = key.split('channel')[-1]
-                    break
-
-        self.logger.info(f"Preparing to send Telegram message to Meshtastic: {meshtastic_message}")
-        try:
-           meshtastic_message_id = await self.meshtastic.send_message(meshtastic_message, recipient, channel=channel)
-           self.logger.info(f"Successfully sent message to Meshtastic {channel=} [{meshtastic_message_id=}]: {meshtastic_message}")
-           
-           self.pending_acks[meshtastic_message_id] = {
-               'telegram_message_id': telegram_message_id,
-               'telegram_thread_id': telegram_thread_id,
-               'timestamp': datetime.now(timezone.utc)
-           }
-           
-           _ = asyncio.create_task(self.remove_pending_ack(str(meshtastic_message_id)))
-        except Exception as e:
-           self.logger.error(f"Failed to send message to Meshtastic: {e}", exc_info=True)
-           await self.telegram.send_message("Failed to send message to Meshtastic. Please try again.", topic=telegram_thread_id)
-
-    async def remove_pending_ack(self, message_id: int) -> None:
-        await asyncio.sleep(self.ack_timeout)
-        if message_id in self.pending_acks:
-            self.logger.warning(f"ACK timeout for message ID: {message_id}")
-            del self.pending_acks[message_id]
-
-    async def process_pending_acks(self) -> None:
-        while True:
-            now = datetime.now(timezone.utc)
-            for message_id, data in list(self.pending_acks.items()):
-                if (now - data['timestamp']).total_seconds() > self.ack_timeout:
-                    self.logger.warning(f"ACK timeout for message ID: {message_id}")
-                    del self.pending_acks[message_id]
-            await asyncio.sleep(10)  # Check every 10 seconds
+    # --- Telegram Message Handlers ---
 
     async def handle_telegram_message(self, message: TelegramMessage) -> None:
         handlers = {
@@ -347,6 +308,115 @@ class MessageProcessor:
             await handler(message)
         else:
             self.logger.warning(f"Received unknown message type: {message['type']=}")
+
+    async def handle_telegram_text(self, message: Dict[str, Any]) -> None:
+        if not self.forwarding_enabled:
+            self.logger.info("Message forwarding to Meshtastic is disabled, skipping Telegram text message.")
+            return
+
+        self.logger.info(f"Handling Telegram text message: {message}")
+        sender = message['sender'][:10]
+        recipient = self.config.get('meshtastic.default_node_id')
+        text = message['text']
+        telegram_message_id = message['message_id']
+        telegram_thread_id = message['thread_id']
+        meshtastic_message = f"[TG:{sender}] {text}"
+        channel = None
+
+        use_topics = self.config.get('telegram.use_topics', False)
+        if use_topics:
+            topics = self.config.get('topics', {})
+            for key, value in topics.items():
+                if key.startswith('channel') and value == telegram_thread_id:
+                    channel = key.split('channel')[-1]
+                    break
+
+        self.logger.info(f"Preparing to send Telegram message to Meshtastic: {meshtastic_message}")
+        try:
+            meshtastic_message_id = await self.meshtastic.send_message(meshtastic_message, recipient, channel=channel)
+            self.logger.info(f"Successfully sent message to Meshtastic {channel=} [{meshtastic_message_id=}]: {meshtastic_message}")
+            self.pending_acks[meshtastic_message_id] = {
+                'telegram_message_id': telegram_message_id,
+                'telegram_thread_id': telegram_thread_id,
+                'timestamp': datetime.now(timezone.utc)
+            }
+            _ = asyncio.create_task(self.remove_pending_ack(str(meshtastic_message_id)))
+        except Exception as e:
+            self.logger.error(f"Failed to send message to Meshtastic: {e}", exc_info=True)
+            await self.telegram.send_message("Failed to send message to Meshtastic. Please try again.", topic=telegram_thread_id)
+
+    async def handle_telegram_location(self, message: TelegramMessage) -> None:
+        location = message.get('location', {})
+        lat, lon = location.get('latitude'), location.get('longitude')
+        alt = location.get('altitude', 0)
+        sender = message.get('sender', 'unknown')
+        try:
+            if not self.is_valid_coordinate(lat, lon, alt):
+                raise ValueError("Invalid coordinates")
+            recipient = self.config.get('meshtastic.default_node_id')
+            await self.meshtastic.send_message(
+                f"[TG:{sender}] location lat={lat:.6f}, lon={lon:.6f}, alt={alt:.1f}m", recipient
+            )
+            await self.telegram.send_message(
+                f"📍 Location sent to Meshtastic network: lat={lat:.6f}, lon={lon:.6f}, alt={alt:.1f}m"
+            )
+        except ValueError as e:
+            self.logger.error(f"Invalid location data: {e}")
+            await self.telegram.send_message(f"Failed to send location to Meshtastic. Invalid data: {e}")
+        except Exception as e:
+            self.logger.error(f"Failed to send location to Meshtastic: {e}", exc_info=True)
+            await self.telegram.send_message("Failed to send location to Meshtastic. Please try again.")
+
+    async def handle_telegram_command(self, message: TelegramMessage) -> None:
+        update = None
+        try:
+            command = message.get('command', '').partition('@')[0]
+            args = message.get('args', [])
+            user_id = message.get('user_id')
+            update = message.get('update')
+
+            if not user_id or not update:
+                self.logger.error("Missing user_id or update in command message")
+                return
+
+            if not self.telegram.is_user_authorized(user_id) and command not in [
+                'start', 'help', 'user', 'node', 'status', 'features'
+            ]:
+                await update.message.reply_text("You are not authorized to use this command.")
+                return
+
+            handler = getattr(self, f"cmd_{command}", None)
+            if handler:
+                await handler(args, user_id, update)
+            else:
+                await update.message.reply_text(f"Unknown command: {command}")
+        except Exception as e:
+            self.logger.error(f'Error handling Telegram command: {e}', exc_info=True)
+            if update and update.message:
+                await update.message.reply_text(f"Error executing command: {e}")
+
+    async def handle_telegram_reaction(self, message: TelegramMessage) -> None:
+        self.logger.info(f"Processing reaction: {message}")
+        emoji = message.get('emoji')
+        original_message_id = message.get('original_message_id')
+        if not emoji or not original_message_id:
+            self.logger.error("Missing emoji or original_message_id in reaction message")
+            return
+        meshtastic_message_id = self._get_meshtastic_message_id(original_message_id)
+        if meshtastic_message_id:
+            await self.meshtastic.send_reaction(emoji, meshtastic_message_id)
+        else:
+            self.logger.warning(
+                f"Could not find corresponding Meshtastic message for Telegram message ID: {original_message_id}"
+            )
+
+    # --- Utility Methods ---
+
+    async def remove_pending_ack(self, message_id: int) -> None:
+        await asyncio.sleep(self.ack_timeout)
+        if message_id in self.pending_acks:
+            self.logger.warning(f"ACK timeout for message ID: {message_id}")
+            del self.pending_acks[message_id]
 
     def _store_message_id_mapping(self, telegram_id: int, meshtastic_id: str) -> None:
         self.message_id_map[telegram_id] = meshtastic_id
@@ -365,70 +435,11 @@ class MessageProcessor:
         else:
             self.logger.warning(f"Could not find corresponding Telegram message for Meshtastic message ID: {meshtastic_message_id}")
 
-    async def handle_telegram_location(self, message: TelegramMessage) -> None:
-        location = message.get('location', {})
-        lat, lon = location.get('latitude'), location.get('longitude')
-        alt = location.get('altitude', 0)
-        sender = message.get('sender', 'unknown')
-        try:
-            if not self.is_valid_coordinate(lat, lon, alt):
-                raise ValueError("Invalid coordinates")
-
-            recipient = self.config.get('meshtastic.default_node_id')
-            await self.meshtastic.send_message(f"[TG:{sender}] location lat={lat:.6f}, lon={lon:.6f}, alt={alt:.1f}m", recipient)
-            await self.telegram.send_message(f"📍 Location sent to Meshtastic network: lat={lat:.6f}, lon={lon:.6f}, alt={alt:.1f}m")
-        except ValueError as e:
-            self.logger.error(f"Invalid location data: {e}")
-            await self.telegram.send_message(f"Failed to send location to Meshtastic. Invalid data: {e}")
-        except Exception as e:
-            self.logger.error(f"Failed to send location to Meshtastic: {e}", exc_info=True)
-            await self.telegram.send_message("Failed to send location to Meshtastic. Please try again.")
-
     def is_valid_coordinate(self, lat: float | None, lon: float | None, alt: float) -> bool:
         return (lat is not None and lon is not None and
                 -90 <= lat <= 90 and -180 <= lon <= 180 and -1000 <= alt <= 50000)
 
-    async def handle_telegram_command(self, message: TelegramMessage) -> None:
-        update = None
-        try:
-            command = message.get('command', '').partition('@')[0]
-            args = message.get('args', [])
-            user_id = message.get('user_id')
-            update = message.get('update')
-
-            if not user_id or not update:
-                self.logger.error("Missing user_id or update in command message")
-                return
-
-            if not self.telegram.is_user_authorized(user_id) and command not in ['start', 'help', 'user', 'node', 'status', 'features']:
-                await update.message.reply_text("You are not authorized to use this command.")
-                return
-
-            handler = getattr(self, f"cmd_{command}", None)
-            if handler:
-                await handler(args, user_id, update)
-            else:
-                await update.message.reply_text(f"Unknown command: {command}")
-        except Exception as e:
-            self.logger.error(f'Error handling Telegram command: {e}', exc_info=True)
-            if update and update.message:
-                await update.message.reply_text(f"Error executing command: {e}")
-
-    async def handle_telegram_reaction(self, message: TelegramMessage) -> None:
-        self.logger.info(f"Processing reaction: {message}")
-        emoji = message.get('emoji')
-        original_message_id = message.get('original_message_id')
-        
-        if not emoji or not original_message_id:
-            self.logger.error("Missing emoji or original_message_id in reaction message")
-            return
-
-        meshtastic_message_id = self._get_meshtastic_message_id(original_message_id)
-        
-        if meshtastic_message_id:
-            await self.meshtastic.send_reaction(emoji, meshtastic_message_id)
-        else:
-            self.logger.warning(f"Could not find corresponding Meshtastic message for Telegram message ID: {original_message_id}")
+    # --- Command Handlers (cmd_*) ---
 
     async def cmd_start(self, args: list[str], user_id: int, update: Update) -> None:
         welcome_message = (
@@ -579,7 +590,6 @@ class MessageProcessor:
                 )
             else:
                 self.logger.error("Cannot reply: update.message is None")
-
         except Exception as e:
             self.logger.error(f"Failed to send bell to node {dest_id=}: {e=}", exc_info=True)
             if update.message:
@@ -606,15 +616,13 @@ class MessageProcessor:
         routing_info: str = self.node_manager.format_node_routing(node_id)
         neighbor_info: str = self.node_manager.format_node_neighbors(node_id)
         sensor_info: str = self.node_manager.get_node_sensor_info(node_id)
-        
         full_info: str = f"{node_info}\n\n{telemetry_info}\n\n{position_info}\n\n{routing_info}\n\n{neighbor_info}\n\n{sensor_info}"
         full_info = escape_markdown(full_info, version=2)
-        full_info = re.sub(r'\\\[([^\]]+)\\\]\\\(([^)]+)\\\)', r'[\1](\2)', full_info)  # Fix Markdown escaping
+        full_info = re.sub(r'\\\[([^\]]+)\\\]\\\(([^)]+)\\\)', r'[\1](\2)', full_info)
         if update.message:
             _ = await update.message.reply_text(full_info, parse_mode=ParseMode.MARKDOWN_V2, link_preview_options=LinkPreviewOptions(is_disabled=True))
         else:
             self.logger.error("Cannot reply: update.message is None")
-
 
     async def cmd_listnodes(self, args: list[str], user_id: int, update: Update) -> None:
         nodes = self.node_manager.get_all_nodes()
@@ -657,7 +665,6 @@ class MessageProcessor:
         uptime: timedelta = datetime.now(timezone.utc) - self.start_time
         meshtastic_status: str = await self.meshtastic.get_status()
         num_nodes: int = len(self.node_manager.get_all_nodes())
-        
         status_lines: list[str] = [
             "📊 *Meshgram Status*:",
             f"⏱️ Uptime: `{self._format_uptime(uptime.total_seconds())}`",
@@ -665,28 +672,22 @@ class MessageProcessor:
             "",
             "📡 *Meshtastic Status*:"
         ]
-        
         for line in meshtastic_status.split('\n'):
             key, value = line.split(': ', 1)
             status_lines.append(f"{key}: `{escape_markdown(value, version=2)}`")
-        
         return "\n".join(status_lines)
 
     async def close(self) -> None:
         if self.is_closing:
             self.logger.info("MessageProcessor is already closing, skipping.")
             return
-
         self.is_closing = True
         self.logger.info("Closing MessageProcessor...")
-        
         for task in self.processing_tasks:
             if not task.done():
                 task.cancel()
-        
         if self.processing_tasks:
             await asyncio.gather(*self.processing_tasks, return_exceptions=True)
-        
         self.processing_tasks.clear()
         self.is_closing = False
         self.logger.info("MessageProcessor closed.")
@@ -746,14 +747,16 @@ class MessageProcessor:
         position_info = self.node_manager.get_node_position(node_id)
         if self.reports.get('location', True):
             await self.telegram.send_or_edit_message('location', node_id, position_info)
-        
         latitude = position.get('latitudeI', 0) / 1e7
         longitude = position.get('longitudeI', 0) / 1e7
         if latitude != 0 and longitude != 0:
             if self.reports.get('location', True):
                 t = self.telegram.get_topic_id('location')
-                await self.telegram.bot.send_location(chat_id=self.telegram.chat_id, latitude=latitude, longitude=longitude,
-                    **{ 'message_thread_id': t } if t != 1 else {},
+                await self.telegram.bot.send_location(
+                    chat_id=self.telegram.chat_id,
+                    latitude=latitude,
+                    longitude=longitude,
+                    **({'message_thread_id': t} if t != 1 else {}),
                 )
 
     async def handle_telemetry_app(self, packet: Dict[str, Any]) -> None:

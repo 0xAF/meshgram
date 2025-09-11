@@ -1,13 +1,16 @@
 import asyncio
+import re
 from typing import Dict, Any, Optional, Callable, TypedDict, NotRequired
 from collections.abc import Awaitable
-from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, MessageReactionHandler, filters
+from telegram import Bot, Update
+from telegram.ext import (
+    Application, CommandHandler, ContextTypes,
+    MessageHandler, MessageReactionHandler, filters
+)
 from telegram.constants import ParseMode
 from telegram.helpers import escape_markdown
 from telegram.error import BadRequest
 from config_manager import ConfigManager, get_logger
-import re
 
 class CommandData(TypedDict):
     description: str
@@ -15,27 +18,28 @@ class CommandData(TypedDict):
 
 class TelegramInterface:
     def __init__(self, config: ConfigManager) -> None:
-        self.config: ConfigManager = config
+        self.config = config
         self.logger = get_logger(__name__)
-        self.bot: Bot | None = None
-        self.application: Application | None = None
+        self.bot: Optional[Bot] = None
+        self.application: Optional[Application] = None
         self.message_queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
         self._stop_event: asyncio.Event = asyncio.Event()
-        self.chat_id: int | None = None
+        self.chat_id: Optional[int] = None
         self.last_messages: Dict[str, int] = {}
-        self.commands: Dict[str, CommandData] = {
-            'start': {'description': 'Start the bot and see available commands', 'handler': self.start_command},
-            'help': {'description': 'Show help message', 'handler': self.help_command},
-            'user': {'description': 'Get information about your Telegram user', 'handler': self.user_command},
-            'status': {'description': 'Check the current status', 'handler': self.handle_command},
-            'bell': {'description': 'Send a bell to the meshtastic user', 'handler': self.handle_command},
-            'node': {'description': 'Get information about a specific node', 'handler': self.handle_command},
-            'enable': {'description': 'Enable a feature', 'handler': self.handle_command},
-            'disable': {'description': 'Disable a feature', 'handler': self.handle_command},
-            'features': {'description': 'List features', 'handler': self.handle_command},
-            'listnodes': {'description': 'List all known nodes', 'handler': self.handle_command},
-        }
         self.is_polling: bool = False
+
+        self.commands: Dict[str, CommandData] = {
+            'start':    {'description': 'Start the bot and see available commands', 'handler': self.start_command},
+            'help':     {'description': 'Show help message', 'handler': self.help_command},
+            'user':     {'description': 'Get information about your Telegram user', 'handler': self.user_command},
+            'status':   {'description': 'Check the current status', 'handler': self.handle_command},
+            'bell':     {'description': 'Send a bell to the meshtastic user', 'handler': self.handle_command},
+            'node':     {'description': 'Get information about a specific node', 'handler': self.handle_command},
+            'enable':   {'description': 'Enable a feature', 'handler': self.handle_command},
+            'disable':  {'description': 'Disable a feature', 'handler': self.handle_command},
+            'features': {'description': 'List features', 'handler': self.handle_command},
+            'listnodes':{'description': 'List all known nodes', 'handler': self.handle_command},
+        }
 
     async def setup(self) -> None:
         self.logger.info("Setting up telegram interface...")
@@ -68,7 +72,6 @@ class TelegramInterface:
         if not self.application:
             self.logger.error("Telegram application not initialized")
             return
-
         self.logger.info("Starting telegram polling...")
         try:
             await self.application.initialize()
@@ -133,23 +136,18 @@ class TelegramInterface:
         use_topics = self.config.get('telegram.use_topics', False)
         topics = self.config.get('topics', {})
         if use_topics and topic != "default":
-            if isinstance(topic, int) or isinstance(topic, str) and topic.isnumeric():
+            if isinstance(topic, int) or (isinstance(topic, str) and topic.isnumeric()):
                 return int(topic)
             if topic in topics:
                 return int(topics[topic])
         return 1
-    
+
     async def send_or_edit_message(self, message_type: str, node_id: str, content: str) -> None:
         message_key = f"{message_type}:{node_id}"
-        match message_type:
-            case 'nodeinfo':
-                topic = 'nodes'
-            case _:
-                topic = message_type
+        topic = 'nodes' if message_type == 'nodeinfo' else message_type
         if message_key in self.last_messages:
             success = await self.edit_message(self.last_messages[message_key], content)
             if not success:
-                # If editing fails, send a new message
                 message_id = await self.send_message(text=content, topic=topic)
                 if message_id:
                     self.last_messages[message_key] = message_id
@@ -158,25 +156,25 @@ class TelegramInterface:
             if message_id:
                 self.last_messages[message_key] = message_id
 
-    async def send_message(self, text: str, disable_notification: bool = False, topic = "default") -> int | None:
+    async def send_message(self, text: str, disable_notification: bool = False, topic="default") -> Optional[int]:
         if self.bot is None or self.chat_id is None:
             self.logger.error("Bot or chat_id not initialized")
             return None
         try:
             escaped_text = escape_markdown(text, version=2)
-            # unescape custom formatting
-            escaped_text = escaped_text.replace('<i\\>', '_').replace('</i\\>', '_')
-            escaped_text = escaped_text.replace('<b\\>', '*').replace('</b\\>', '*')
-            escaped_text = escaped_text.replace('<u\\>', '__').replace('</u\\>', '__')
-            escaped_text = escaped_text.replace('\\`', '`')
+            # Unescape custom formatting
+            escaped_text = (
+                escaped_text.replace('<i\\>', '_').replace('</i\\>', '_')
+                            .replace('<b\\>', '*').replace('</b\\>', '*')
+                            .replace('<u\\>', '__').replace('</u\\>', '__')
+                            .replace('\\`', '`')
+            )
             # Convert markdown links: [text](url)
             escaped_text = re.sub(r'\\\[([^\]]+)\\\]\\\(([^)]+)\\\)', r'[\1](\2)', escaped_text)
-            # print(f"---------- Sending message to topic '{topic}':\n{escaped_text}")
             t = self.get_topic_id(topic)
-
             message = await self.bot.send_message(
                 chat_id=self.chat_id,
-                **{ 'message_thread_id': t } if t != 1 else {},
+                **({'message_thread_id': t} if t != 1 else {}),
                 disable_notification=disable_notification,
                 disable_web_page_preview=True,
                 parse_mode=ParseMode.MARKDOWN_V2,
@@ -204,21 +202,18 @@ class TelegramInterface:
             )
             return True
         except BadRequest as e:
-            if "Timed out" in str(e):
+            msg = str(e)
+            if "Timed out" in msg:
                 self.logger.error(f"TimedOut sending Telegram message: {e}")
                 return False
-            if "Message to edit not found" in str(e):
+            if "Message to edit not found" in msg or 'BadRequest error when editing message' in msg:
                 self.logger.warning(f"Message {message_id} not found for editing. Will send as new message.")
                 return False
-            if 'BadRequest error when editing message':
-                self.logger.warning(f"Message {message_id} not found for editing. Will send as new message.")
-                return False
-            if "Message is not modified: " in str(e):
+            if "Message is not modified: " in msg:
                 self.logger.info(f"Message {message_id} is not modified, no edit needed.")
                 return True
-            else:
-                self.logger.error(f"BadRequest error when editing message: {e}", exc_info=True)
-                return False
+            self.logger.error(f"BadRequest error when editing message: {e}", exc_info=True)
+            return False
         except Exception as e:
             self.logger.error(f"Failed to edit Telegram message: {e}", exc_info=True)
             return False
@@ -239,6 +234,8 @@ class TelegramInterface:
             )
         except Exception as e:
             self.logger.error(f"Failed to add reaction to Telegram message: {e}", exc_info=True)
+
+    # --- Command Handlers ---
 
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await self.help_command(update, context)
@@ -270,8 +267,10 @@ class TelegramInterface:
         command = update.message.text.split()[0][1:].partition('@')[0]
         args = context.args or []
         user_id = update.effective_user.id
-        
-        if not self.is_user_authorized(user_id) and command not in ['start', 'help', 'user', 'node', 'status', 'features']:
+
+        if not self.is_user_authorized(user_id) and command not in [
+            'start', 'help', 'user', 'node', 'status', 'features'
+        ]:
             await update.message.reply_text(
                 escape_markdown("You are not authorized to use this command.", version=2),
                 parse_mode=ParseMode.MARKDOWN_V2

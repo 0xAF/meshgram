@@ -1,25 +1,27 @@
 import argparse
 import asyncio
+import sys
+import os
 from typing import Optional, List
+from asyncio import Task
+
 from meshtastic_interface import MeshtasticInterface
 from telegram_interface import TelegramInterface
 from message_processor import MessageProcessor
 from config_manager import ConfigManager, get_logger
-from asyncio import Task
-import sys
-import os
 
 class Meshgram:
     def __init__(self, config: ConfigManager) -> None:
-        self.config: ConfigManager = config
+        self.config = config
         self.logger = get_logger(__name__)
         self.meshtastic: Optional[MeshtasticInterface] = None
         self.telegram: Optional[TelegramInterface] = None
         self.message_processor: Optional[MessageProcessor] = None
         self.tasks: List[Task] = []
-        self.is_shutting_down: bool = False
+        self.is_shutting_down = False
 
     async def setup(self) -> None:
+        """Initialize all components."""
         self.logger.info("Setting up meshgram...")
         try:
             self.meshtastic = await self._setup_meshtastic()
@@ -42,27 +44,24 @@ class Meshgram:
         return telegram
 
     async def shutdown(self) -> None:
+        """Shutdown all components and cancel running tasks."""
         if self.is_shutting_down:
             self.logger.info("Shutdown already in progress, loading the timer to kill us.")
             await asyncio.sleep(5)
             self.logger.info("Timeout reached during shutdown, exiting.")
             os._exit(0)
-            # sys.exit(0)
 
         self.is_shutting_down = True
         self.logger.info("Shutting down meshgram...")
 
-        # Cancel all tasks
+        # Cancel all running tasks
         for task in self.tasks:
             if not task.done():
                 task.cancel()
-
-        # Wait for all tasks to complete
         await asyncio.gather(*self.tasks, return_exceptions=True)
 
         # Shutdown components in reverse order of creation
-        components = [self.message_processor, self.telegram, self.meshtastic]
-        for component in components:
+        for component in [self.message_processor, self.telegram, self.meshtastic]:
             if component:
                 try:
                     await component.close()
@@ -72,6 +71,7 @@ class Meshgram:
         self.logger.info("Meshgram shutdown complete.")
 
     async def run(self) -> None:
+        """Run the main application loop."""
         try:
             await self.setup()
         except Exception as e:
@@ -89,13 +89,6 @@ class Meshgram:
         ]
         try:
             await asyncio.gather(*self.tasks)
-            # done, pending = await asyncio.wait(self.tasks, return_when=asyncio.FIRST_COMPLETED)
-            # for task in done:
-            #     result = await task
-            #     self.logger.info(f"Task {task.get_name() if hasattr(task, 'get_name') else str(task)} finished with result: {result}")
-            # # cancel the pending tasks
-            # for task in pending:
-            #     task.cancel()
         except asyncio.CancelledError:
             self.logger.info("Received cancellation signal.")
         except Exception as e:
