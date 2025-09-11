@@ -162,6 +162,23 @@ class MessageProcessor:
                     del self.pending_acks[message_id]
             await asyncio.sleep(10)
 
+    async def remove_pending_ack(self, message_id: int, delay: int | None = None) -> None:
+        """Remove a pending ACK entry after a delay (defaults to ack_timeout).
+
+        This is a safety net: we already have a periodic sweeper, but this
+        targeted task lets us clean up even if the sweeper interval changes or
+        the object is shutting down soon.
+        """
+        try:
+            await asyncio.sleep(delay if delay is not None else self.ack_timeout)
+            if message_id in self.pending_acks:
+                data = self.pending_acks.pop(message_id)
+                log_event(self.logger, 10, "ack_pruned", instance=self.instance_id, message_id=message_id, bridge_id=data.get('bridge_id'))
+        except asyncio.CancelledError:  # pragma: no cover - shutdown path
+            pass
+        except Exception as e:  # pragma: no cover - defensive
+            self.logger.debug(f"remove_pending_ack error for id={message_id}: {e}")
+
     async def close(self) -> None:
         """Idempotently stop processing, cancel tasks, and emit structured stop events."""
         if getattr(self, "_already_closed", False):
@@ -348,10 +365,67 @@ class MessageProcessor:
                 channel_label = f"[<u>{channel_name}</u>]"
             except Exception:
                 pass
-        message = (
+        # Signal quality and info formatting
+        signal_emoji = "❓"
+        signal_label = "Unknown"
+        try:
+            rssi_val = float(str(rssi)) if rssi != 'n/a' else None  # type: ignore[arg-type]
+            snr_val = float(str(snr)) if snr != 'n/a' else None  # type: ignore[arg-type]
+            if rssi_val is not None and snr_val is not None:
+                if rssi_val > -80 and snr_val > 8:
+                    signal_emoji = "😃"
+                    signal_label = "Excellent"
+                elif rssi_val > -90 and snr_val > 2:
+                    signal_emoji = "🙂"
+                    signal_label = "Good"
+                elif rssi_val > -100 and snr_val > -5:
+                    signal_emoji = "😐"
+                    signal_label = "Fair"
+                else:
+                    signal_emoji = "😣"
+                    signal_label = "Bad"
+            elif rssi_val is not None:
+                if rssi_val > -80:
+                    signal_emoji = "😃"
+                    signal_label = "Excellent"
+                elif rssi_val > -90:
+                    signal_emoji = "🙂"
+                    signal_label = "Good"
+                elif rssi_val > -100:
+                    signal_emoji = "😐"
+                    signal_label = "Fair"
+                else:
+                    signal_emoji = "😣"
+                    signal_label = "Bad"
+            elif snr_val is not None:
+                if snr_val > 8:
+                    signal_emoji = "😃"
+                    signal_label = "Excellent"
+                elif snr_val > 2:
+                    signal_emoji = "🙂"
+                    signal_label = "Good"
+                elif snr_val > -5:
+                    signal_emoji = "😐"
+                    signal_label = "Fair"
+                else:
+                    signal_emoji = "😣"
+                    signal_label = "Bad"
+        except Exception:
+            pass
+
+        mqtt_label = " (MQTT)" if mqtt else ""
+        if mqtt:
+            message = (
             f"💬 <b>{channel_label} <u>{from_short}</u>: </b>{text}\n\n"
-            f"📟 [{from_short}{(' - ' + from_long) if from_long else ''}] → [{to_short}{(' - ' + to_long) if to_long else ''}]"
-        )
+            f"📟 [`{from_short}`{(' - `' + from_long + '`') if from_long else ''}] → [`{to_short}`{(' - `' + to_long + '`') if to_long else ''}]\n"
+            f"↔️ Hops Away: {hops_away}, HL: {hops_limit}{mqtt_label}"
+            )
+        else:
+            message = (
+            f"💬 <b>{channel_label} <u>{from_short}</u>: </b>{text}\n\n"
+            f"📟 [`{from_short}`{(' - `' + from_long + '`') if from_long else ''}] → [`{to_short}`{(' - `' + to_long + '`') if to_long else ''}]\n"
+            f"↔️ Hops Away: {hops_away}, HL: {hops_limit}, RSSI: {rssi}, SNR: {snr}, Signal: {signal_emoji} {signal_label}{mqtt_label}"
+            )
 
         # Emit meta + render events
         log_event(self.logger, 20, "bridge_meta", instance=self.instance_id, bridge_id=bridge_id, direction="mesh_to_tg", from_short=from_short, from_long=from_long, to_short=to_short, to_long=to_long, hops_away=hops_away, hop_limit=hops_limit, hop_start=hops_start, rssi=rssi, snr=snr, mqtt=mqtt)
@@ -416,6 +490,113 @@ class MessageProcessor:
             self.logger.error(f"Failed to send message to Meshtastic: {e}", exc_info=True)
             await self.telegram.send_message("Failed to send message to Meshtastic. Please try again.", topic=str(telegram_thread_id))
             log_event(self.logger, 40, "bridge_error", instance=self.instance_id, bridge_id=bridge_id, direction="tg_to_mesh", error=str(e))
+
+    async def handle_telegram_command(self, message: TelegramMessage) -> None:  # type: ignore[override]
+        """Process a Telegram command message.
+
+        The raw Update object (if present) is used for direct replies. We keep
+        formatting simple and escape Markdown V2 to avoid parse errors.
+        """
+        update = message.get('update')
+        command = (message.get('command') or '').lower()
+        args: list[str] = message.get('args', []) or []  # type: ignore[assignment]
+        user_id = message.get('user_id')
+        # Basic context values
+        uptime_delta = datetime.now(timezone.utc) - self.start_time
+
+        async def _reply(text: str) -> None:
+            if update and update.message:
+                try:
+                    await update.message.reply_text(  # type: ignore[attr-defined]
+                        escape_markdown(text, version=2),
+                        parse_mode=ParseMode.MARKDOWN_V2
+                    )
+                except Exception as e:  # pragma: no cover - network
+                    self.logger.debug(f"Failed replying to command /{command}: {e}")
+
+        log_event(self.logger, 20, "tg_cmd_rx", instance=self.instance_id, command=command, user_id=user_id)
+
+        if command == 'status':
+            node_count = len(self.node_manager.get_all_nodes())
+            features = []
+            for k, v in self.reports.items():
+                features.append(f"{k}={'on' if v else 'off'}")
+            features.append(f"forwarding={'on' if self.forwarding_enabled else 'off'}")
+            features_str = ", ".join(features)
+            await _reply(
+                f"Status:\nUptime: {uptime_delta}\nNodes: {node_count}\nReports: {features_str}"
+            )
+            return
+        if command == 'features':
+            features_lines = [f"• {k}: {'enabled' if v else 'disabled'}" for k, v in self.reports.items()]
+            features_lines.append(f"• forwarding: {'enabled' if self.forwarding_enabled else 'disabled'}")
+            await _reply("Features:\n" + "\n".join(features_lines))
+            return
+        if command in ('enable', 'disable') and args:
+            target = args[0].lower()
+            if target in self.reports:
+                new_val = (command == 'enable')
+                self.reports[target] = new_val  # type: ignore[index]
+                log_event(self.logger, 20, "tg_cmd_feature_toggle", instance=self.instance_id, feature=target, value=new_val)
+                await _reply(f"Feature {target} set to {'enabled' if new_val else 'disabled'}")
+            elif target in ('forwarding', 'message_forwarding', 'forward'):
+                new_val = (command == 'enable')
+                self.forwarding_enabled = new_val
+                log_event(self.logger, 20, "tg_cmd_forwarding_toggle", instance=self.instance_id, value=new_val)
+                await _reply(f"Forwarding set to {'enabled' if new_val else 'disabled'}")
+            else:
+                await _reply(f"Unknown feature: {target}")
+            return
+        if command == 'node':
+            if not args:
+                await _reply("Usage: /node <node_id>")
+                return
+            node_id = args[0]
+            info_text = self.node_manager.format_node_info(node_id)
+            await _reply(info_text)
+            return
+        if command == 'listnodes':
+            nodes = list(self.node_manager.get_all_nodes().keys())
+            if not nodes:
+                await _reply("No nodes known yet.")
+            else:
+                sample = nodes[:50]
+                more = '' if len(nodes) <= 50 else f"\n… and {len(nodes)-50} more"
+                await _reply("Known nodes:\n" + "\n".join(sample) + more)
+            return
+        if command == 'bell':
+            # Placeholder bell implementation: send a small marker to default node
+            target = self.config.get('meshtastic.default_node_id')
+            try:
+                _ = await self.meshtastic.send_message("(bell)", target)
+                await _reply("Bell sent.")
+            except Exception as e:  # pragma: no cover - network
+                await _reply(f"Failed to send bell: {e}")
+            return
+        # Fallback for unknown commands
+        await _reply(f"Unknown command: {command}")
+
+    async def handle_telegram_location(self, message: TelegramMessage) -> None:  # type: ignore[override]
+        """Forward a Telegram location if forwarding is enabled."""
+        if not self.forwarding_enabled:
+            return
+        loc = message.get('location') or {}
+        lat = loc.get('latitude')
+        lon = loc.get('longitude')
+        if lat is None or lon is None:
+            return
+        recipient = self.config.get('meshtastic.default_node_id')
+        body = f"[TG:LOC] {lat},{lon}"
+        try:
+            _ = await self.meshtastic.send_message(body, recipient)
+            log_event(self.logger, 20, "bridge_sent", instance=self.instance_id, direction="tg_to_mesh", kind="location")
+        except Exception as e:  # pragma: no cover - network
+            self.logger.error(f"Failed to forward location: {e}")
+
+    async def handle_telegram_reaction(self, message: TelegramMessage) -> None:  # type: ignore[override]
+        """Currently just log reactions; could map to mesh actions later."""
+        emoji = message.get('emoji')
+        log_event(self.logger, 10, "tg_reaction", instance=self.instance_id, emoji=emoji)
 
     # --- (Re)Added Meshtastic App Handlers ---
 

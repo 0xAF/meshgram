@@ -208,7 +208,8 @@ class TelegramInterface:
         replacements = {
             '<b>': '*', '</b>': '*',
             '<i>': '_', '</i>': '_',
-            '<u>': '__', '</u>': '__',
+            # Underline not supported in Markdown V2; drop tags instead of mapping to bold
+            '<u>': '', '</u>': '',
         }
         # Fast path if no angle bracket present
         if '<' not in text:
@@ -226,6 +227,42 @@ class TelegramInterface:
         """
         converted = self._html_tag_to_markdown(original)
         return escape_markdown(converted, version=MARKDOWN_VERSION)
+
+    # --- Raw markdown preparation ---
+
+    def _prepare_raw_markdown(self, text: str) -> str:
+        """Prepare pre-formatted (already escaped) Markdown V2 content.
+
+        Goal: keep existing intentional formatting while only minimally
+        escaping characters that commonly trigger parse errors when not part
+        of a link. The main culprit causing fallback re-escape (and thus
+        double escapes) has been literal square brackets used decoratively.
+
+        Steps:
+          1. Convert allowed lightweight HTML tags to markdown markers.
+          2. Temporarily protect valid markdown links [text](url).
+          3. Escape remaining '[' and ']'.
+          4. Restore protected links.
+        """
+        converted = self._html_tag_to_markdown(text)
+
+        # Protect existing links so we don't escape their brackets
+        link_pattern = re.compile(r"\[[^\]]+\]\([^\)]+\)")
+        placeholders: list[str] = []
+        def _store(m: re.Match) -> str:  # type: ignore[name-defined]
+            placeholders.append(m.group(0))
+            return f"@@LINK{len(placeholders)-1}@@"
+        converted = link_pattern.sub(_store, converted)
+
+        # Escape decorative brackets not already escaped
+        # (avoid double escaping if already has a preceding backslash)
+        converted = re.sub(r"(?<!\\)\[", r"\\[", converted)
+        converted = re.sub(r"(?<!\\)\]", r"\\]", converted)
+
+        # Restore links intact
+        for idx, original in enumerate(placeholders):
+            converted = converted.replace(f"@@LINK{idx}@@", original)
+        return converted
 
     def _thread_kwargs(self, topic: str) -> Dict[str, Any]:
         thread_id = self.get_topic_id(topic)
@@ -257,15 +294,16 @@ class TelegramInterface:
         if self.bot is None or self.chat_id is None:
             self.logger.error("Bot or chat_id not initialized")
             return None
-        raw_markdown_config: bool = self.config.get('telegram.raw_markdown', True)
+        raw_markdown_config: bool = self.config.get('telegram.raw_markdown', False)
         if force_escape is not None and force_escape:
             raw_markdown = False
         else:
             raw_markdown = raw_markdown_config
         t = self.get_topic_id(topic)
-        content = text if raw_markdown else self._escape_markdown(text)
         if raw_markdown:
-            content = self._html_tag_to_markdown(content)
+            content = self._prepare_raw_markdown(text)
+        else:
+            content = self._escape_markdown(text)
         send_kwargs: Dict[str, Any] = {
             'chat_id': self.chat_id,
             'disable_notification': disable_notification,
@@ -314,9 +352,10 @@ class TelegramInterface:
             self.logger.error("Bot or chat_id not initialized")
             return False
         raw_markdown: bool = self.config.get('telegram.raw_markdown', True)
-        content = text if raw_markdown else self._escape_markdown(text)
         if raw_markdown:
-            content = self._html_tag_to_markdown(content)
+            content = self._prepare_raw_markdown(text)
+        else:
+            content = self._escape_markdown(text)
         edit_kwargs: Dict[str, Any] = {
             'chat_id': self.chat_id,
             'message_id': message_id,
