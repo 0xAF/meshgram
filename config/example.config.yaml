@@ -1,47 +1,59 @@
 ---
-# config/config.yaml
+# Example configuration for Meshgram
 #
-# please use https://direnv.net/ or similar to manage the environment variables
+# Copy this file to config/config.yaml and adjust values for your setup.
+# Env vars like ${TELEGRAM_BOT_TOKEN} are supported (via EnvYAML). Consider using direnv: https://direnv.net/
 
 telegram:
-  bot_token: "1111111111:XXXXX-XX-XXXXXXXXXXXXXX-XXX_XXXXXXX" # https://core.telegram.org/bots/tutorial
-  chat_id: "-1111111111111"
+  # Bot token from @BotFather (https://core.telegram.org/bots/tutorial)
+  bot_token: "${TELEGRAM_BOT_TOKEN}"
+  # Target chat (supergroup) id as a negative integer, e.g. -1001234567890
+  chat_id: -1001234567890
+  # List of Telegram user IDs allowed to run privileged commands; empty list allows all users
   authorized_users:
     - 1111111111
-  enable_message_forwarding: False # forward messages from telegram to the meshtastic network
-  use_topics: False # map meshtastic channels to different topics in Telegram
+  # Forward plain Telegram messages to the mesh (to meshtastic.default_node_id)
+  enable_message_forwarding: false
+  # Use Telegram Topics/Threads; map mesh channels to topic IDs under 'topics' below
+  use_topics: false
+  # Preserve incoming Markdown V2 formatting by default (set to false to always auto-escape)
+  raw_markdown: true
 
 meshtastic:
-  connection_type: 'serial'  # 'serial' or 'tcp'
-  device: "/dev/ttyACM0" # for serial connection
-  node_info_link: "https://meshmap.net/#{node_id}" # link to node info page, {node_id} will be replaced with the actual node id
-  # node_info_link: "https://malla.varna.radio/node/{node_id}" # link to node info page, {node_id} will be replaced with the actual node id
-  #device: "192.168.0.100:4403" # for serial connection
-  #default_node_id: '!da73e1bc'
-  default_node_id: '^all' # where to send the telegram messages
-  #default_channel_id: 0 # meshtastic channel send the telegram messages to
-  #ignored_channels: # channels to ignore (do not send them to telegram)
-  #  - 0
-  #  - 1
-  #  - 2
-  heartbeat_timeout: 300 # timeout in seconds for node heartbeats
-  commands:
-    ping: True # /ping command to get your hop count and node id back
-  #local_nodes:
-  #  - '!ba66fc64'
+  # How to connect to your Meshtastic node: 'serial' or 'tcp'
+  connection_type: serial
+  # Serial device when using connection_type=serial (for TCP use "host:port")
+  device: "/dev/ttyACM0"
+  # Example TCP: uncomment the next line and set connection_type: tcp
+  # device: "192.168.0.100:4403"
 
-# Name the channels
+  # Where to send Telegram-originated messages on the mesh:
+  #  - "^all" to broadcast
+  #  - "!abcdef12" for a specific node id
+  default_node_id: "^all"
+  # Default mesh channel index for outbound messages (0..N)
+  default_channel_id: 0
+  # Channels to ignore (do not forward to Telegram)
+  # ignored_channels: [1, 2]
+
+  # Link template to a node info page; {node_id} is replaced with the numeric id
+  node_info_link: "https://meshmap.net/{node_id}"
+  # Alternative example:
+  # node_info_link: "https://malla.varna.radio/node/{node_id}"
+
+# Optional human-friendly names for mesh channel indices
 channels:
-  - 'LongFast'
-  - 'Bulgaria'
+  - "LongFast"   # 0
+  - "Bulgaria"   # 1
 
 reports:
-  telemetry: True
-  location: False
-  nodes: True
+  # Control what information Meshgram posts/updates in Telegram
+  telemetry: true
+  location: false
+  nodes: true
 
-# set the message_thread_id for each topic
-# read this https://stackoverflow.com/a/75178418/420585 to learn how to get the message_thread_id
+# Thread IDs for Telegram Topics (used when telegram.use_topics=true)
+# How to get message_thread_id: https://stackoverflow.com/a/75178418/420585
 topics:
   telemetry: 907
   location: 909
@@ -50,16 +62,23 @@ topics:
   channel1: 911
 
 telemetry:
-  environment_enabled: False
+  # Periodically run a script and publish its metrics to the mesh
+  environment_enabled: false
   environment_script: "./ha.sh"
-  environment_send_interval: 300  # in seconds, how often to send telemetry data
+  environment_send_interval: 300  # seconds
 
 logging:
-  level: 'info'
-  level_telegram: 'warn'
-  level_httpx: 'warn'
+  # Global log level: debug | info | warn | error
+  level: "info"
+  # Per-library overrides (to reduce noise)
+  level_telegram: "warn"
+  level_httpx: "warn"
+  # Write logs to a file as well as console
+  file_log: false
+  file_path: "meshgram.log"
+  # Also send logs to syslog (optional)
   use_syslog: false
   syslog_host: "127.0.0.1"
   syslog_port: 514
-  syslog_protocol: 'udp'  # 'udp' or 'tcp'
+  syslog_protocol: "udp"  # udp or tcp
 

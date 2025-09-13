@@ -4,7 +4,8 @@ from typing import Dict, Any, Optional, List, Union, TypedDict
 from datetime import datetime, timedelta
 from telegram.helpers import escape_markdown
 import json
-from config_manager import ConfigManager, get_logger
+from config_manager import ConfigManager
+from logging_utils import get_logger
 from sqlitedict import SqliteDict
 import os
 
@@ -33,7 +34,13 @@ class NodeManager:
     def __init__(self, config: ConfigManager) -> None:
         self.config: ConfigManager = config
         self.logger = get_logger(__name__)
-        self.nodes: Dict[str, NodeData] = SqliteDict('cache.db', tablename="nodes", autocommit=True)
+        self.nodes: Dict[str, NodeData] = SqliteDict(
+            'cache.db',
+            tablename="nodes",
+            autocommit=True,
+            encode=json.dumps,
+            decode=json.loads
+        )
         self.history_limit: int = 100
         self.migrate_nodes_from_old_cache()
 

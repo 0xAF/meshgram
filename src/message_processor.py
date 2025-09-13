@@ -10,10 +10,11 @@ from telegram.constants import ParseMode
 from telegram.helpers import escape_markdown
 from meshtastic_interface import MeshtasticInterface
 from telegram_interface import TelegramInterface
-from config_manager import ConfigManager, get_logger
+from config_manager import ConfigManager
+from logging_utils import get_logger, StructuredLogger
 from node_manager import NodeManager
 import re
-from logging_utils import log_event, new_id
+from logging_utils import new_id
 
 # --- Type Definitions ---
 
@@ -68,8 +69,8 @@ class MessageProcessor:
 
     def __init__(self, meshtastic: MeshtasticInterface, telegram: TelegramInterface, config: ConfigManager) -> None:
         self.config: ConfigManager = config
-        import logging
-        self.logger: logging.Logger = get_logger(__name__)
+        from typing import cast as _cast
+        self.logger: StructuredLogger = _cast(StructuredLogger, get_logger(__name__))
         self.instance_id = new_id()
         self.meshtastic: MeshtasticInterface = meshtastic
         self.telegram: TelegramInterface = telegram
@@ -95,11 +96,11 @@ class MessageProcessor:
 
     async def process_messages(self) -> None:
         """Launch core processing loops and wait until completion/cancellation."""
-        log_event(self.logger, 20, "processor_start", instance=self.instance_id)
+        self.logger.info("processor_start", instance=self.instance_id)
         self.processing_tasks = [
             asyncio.create_task(self.process_meshtastic_messages()),
             asyncio.create_task(self.process_telegram_messages()),
-            asyncio.create_task(self.process_pending_acks())
+            asyncio.create_task(self.process_pending_acks()),
         ]
         try:
             await asyncio.gather(*self.processing_tasks)
@@ -125,7 +126,7 @@ class MessageProcessor:
                         f"from={message.get('fromId')} raw_type={message.get('type')} id={message.get('id')}"
                     )
                 # dynamic packet dict access
-                log_event(self.logger, 10, "mt_message_rx", instance=self.instance_id, portnum=message.get('decoded', {}).get('portnum'), from_id=message.get('fromId'))  # type: ignore[arg-type]
+                self.logger.debug("mt_message_rx", instance=self.instance_id, portnum=message.get('decoded', {}).get('portnum'), from_id=message.get('fromId'))  # type: ignore[arg-type]
                 match message.get('type'):
                     case 'ack':
                         _ = await self.handle_ack(message)
@@ -142,7 +143,7 @@ class MessageProcessor:
         while not self.is_closing:
             try:
                 message = await self.telegram.message_queue.get()  # type: ignore[assignment]
-                log_event(self.logger, 20, "tg_message_rx", instance=self.instance_id, type=message.get('type'), user_id=message.get('user_id'))  # type: ignore[arg-type]
+                self.logger.info("tg_message_rx", instance=self.instance_id, type=message.get('type'), user_id=message.get('user_id'))  # type: ignore[arg-type]
                 await self.handle_telegram_message(cast(TelegramMessage, message))  # type: ignore[arg-type]
             except asyncio.CancelledError:
                 break
@@ -158,7 +159,7 @@ class MessageProcessor:
                 if (now - data['timestamp']).total_seconds() > self.ack_timeout:
                     bridge_id = data.get('bridge_id')
                     # Structured timeout event
-                    log_event(self.logger, 30, "ack_timeout", instance=self.instance_id, message_id=message_id, bridge_id=bridge_id)
+                    self.logger.warning("ack_timeout", instance=self.instance_id, message_id=message_id, bridge_id=bridge_id)
                     del self.pending_acks[message_id]
             await asyncio.sleep(10)
 
@@ -173,7 +174,7 @@ class MessageProcessor:
             await asyncio.sleep(delay if delay is not None else self.ack_timeout)
             if message_id in self.pending_acks:
                 data = self.pending_acks.pop(message_id)
-                log_event(self.logger, 10, "ack_pruned", instance=self.instance_id, message_id=message_id, bridge_id=data.get('bridge_id'))
+                self.logger.debug("ack_pruned", instance=self.instance_id, message_id=message_id, bridge_id=data.get('bridge_id'))
         except asyncio.CancelledError:  # pragma: no cover - shutdown path
             pass
         except Exception as e:  # pragma: no cover - defensive
@@ -191,7 +192,7 @@ class MessageProcessor:
             await asyncio.sleep(0)
             return
         self.is_closing = True
-        log_event(self.logger, 20, "processor_stop_begin", instance=self.instance_id)
+        self.logger.info("processor_stop_begin", instance=self.instance_id)
 
         # Cancel any still-running tasks spawned by process_messages (defensive).
         for t in self.processing_tasks:
@@ -205,7 +206,7 @@ class MessageProcessor:
         self.processing_tasks.clear()
         self.is_closing = False
         self._already_closed = True  # type: ignore[attr-defined]
-        log_event(self.logger, 20, "processor_stop_complete", instance=self.instance_id)
+        self.logger.info("processor_stop_complete", instance=self.instance_id)
 
     # --- Meshtastic Message Handlers ---
 
@@ -261,7 +262,7 @@ class MessageProcessor:
         message_id = packet.get('request_id')
         if message_id is None:
             self.logger.warning(f"Received ACK without message ID\n{packet=}\n")
-            log_event(self.logger, 30, "ack_missing_id", instance=self.instance_id)
+            self.logger.warning("ack_missing_id", instance=self.instance_id)
             return
         self.logger.info(f"[Meshtastic] ACK received for message_id={message_id}")
 
@@ -276,7 +277,7 @@ class MessageProcessor:
             if telegram_message_id:
                 await self.telegram.add_reaction(telegram_message_id, '👌')
                 self.logger.info(f"ACK processed for message ID: {message_id}, Telegram message ID: {telegram_message_id}")
-                log_event(self.logger, 20, "ack_processed", instance=self.instance_id, message_id=message_id_int, telegram_message_id=telegram_message_id, bridge_id=pending_message.get('bridge_id'))
+                self.logger.info("ack_processed", instance=self.instance_id, message_id=message_id_int, telegram_message_id=telegram_message_id, bridge_id=pending_message.get('bridge_id'))
 
     async def handle_text_message_app(self, packet: dict[str, object]) -> None:  # type: ignore[override]
         """Format and forward a Meshtastic text message to Telegram (enriched logging)."""
@@ -322,7 +323,7 @@ class MessageProcessor:
             if isinstance(rln, str) and rln.strip() and rln.lower() != 'unknown':
                 to_long = rln.strip()
 
-        log_event(self.logger, 20, "bridge_start", instance=self.instance_id, bridge_id=bridge_id, direction="mesh_to_tg", from_id=sender, to_id=recipient, from_short=from_short, from_long=from_long, to_short=to_short, to_long=to_long)
+            self.logger.info("bridge_start", instance=self.instance_id, bridge_id=bridge_id, direction="mesh_to_tg", from_id=sender, to_id=recipient, from_short=from_short, from_long=from_long, to_short=to_short, to_long=to_long)
 
         # Metrics
         hops_start = packet.get('hopStart', 0)  # type: ignore[index]
@@ -337,7 +338,7 @@ class MessageProcessor:
 
         # Ping shortcut
         if self.mesh_commands.get('ping', False) and text.startswith('/ping'):
-            log_event(self.logger, 20, "ping_command_rx", instance=self.instance_id, bridge_id=bridge_id, sender=sender, recipient=recipient, from_short=from_short, to_short=to_short, channel=channel_num)
+            self.logger.info("ping_command_rx", instance=self.instance_id, bridge_id=bridge_id, sender=sender, recipient=recipient, from_short=from_short, to_short=to_short, channel=channel_num)
             ping_text = f"{from_short} → HopsAway={hops_away}, HStart={hops_start}, HLimit={hops_limit}"
             if rssi != 'n/a':
                 ping_text += f", RSSI={rssi}"
@@ -350,7 +351,7 @@ class MessageProcessor:
                     'telegram_thread_id': 0,
                     'timestamp': datetime.now(timezone.utc)
                 }
-                log_event(self.logger, 20, "ping_command_reply_sent", instance=self.instance_id, bridge_id=bridge_id, meshtastic_message_id=meshtastic_message_id, from_short=from_short, to_short=to_short)
+                self.logger.info("ping_command_reply_sent", instance=self.instance_id, bridge_id=bridge_id, meshtastic_message_id=meshtastic_message_id, from_short=from_short, to_short=to_short)
             except Exception as e:
                 self.logger.error(f"Failed to send ping reply: {e}", exc_info=True)
             # Continue to publish ping result to Telegram
@@ -422,20 +423,19 @@ class MessageProcessor:
             )
         else:
             message = (
-            f"💬 <b>{channel_label} <u>{from_short}</u>: </b>{text}\n\n"
-            f"📟 [`{from_short}`{(' - `' + from_long + '`') if from_long else ''}] → [`{to_short}`{(' - `' + to_long + '`') if to_long else ''}]\n"
-            f"↔️ Hops Away: {hops_away}, HL: {hops_limit}, RSSI: {rssi}, SNR: {snr}, Signal: {signal_emoji} {signal_label}{mqtt_label}"
+                f"💬 <b>{channel_label} <u>{from_short}</u>: </b>{text}\n\n"
+                f"📟 [`{from_short}`{(' - `' + from_long + '`') if from_long else ''}] → [`{to_short}`{(' - `' + to_long + '`') if to_long else ''}]\n"
+                f"↔️ Hops Away: {hops_away}, HL: {hops_limit}, RSSI: {rssi}, SNR: {snr}, Signal: {signal_emoji} {signal_label}{mqtt_label}"
             )
-
         # Emit meta + render events
-        log_event(self.logger, 20, "bridge_meta", instance=self.instance_id, bridge_id=bridge_id, direction="mesh_to_tg", from_short=from_short, from_long=from_long, to_short=to_short, to_long=to_long, hops_away=hops_away, hop_limit=hops_limit, hop_start=hops_start, rssi=rssi, snr=snr, mqtt=mqtt)
+        self.logger.info("bridge_meta", instance=self.instance_id, bridge_id=bridge_id, direction="mesh_to_tg", from_short=from_short, from_long=from_long, to_short=to_short, to_long=to_long, hops_away=hops_away, hop_limit=hops_limit, hop_start=hops_start, rssi=rssi, snr=snr, mqtt=mqtt)
         log_text = text.replace('\n', '\\n')
         if len(log_text) > 160:
             log_text = log_text[:160] + '…'
-        log_event(self.logger, 10, "bridge_render", instance=self.instance_id, bridge_id=bridge_id, direction="mesh_to_tg", message_text=log_text)
+        self.logger.debug("bridge_render", instance=self.instance_id, bridge_id=bridge_id, direction="mesh_to_tg", message_text=log_text)
         _ = await self.telegram.send_message(message, disable_notification=False, topic=f"channel{channel_num}" if not recipient.startswith('!') else "default")
-        log_event(self.logger, 20, "bridge_sent", instance=self.instance_id, bridge_id=bridge_id, direction="mesh_to_tg")
-        log_event(self.logger, 20, "bridge_complete", instance=self.instance_id, bridge_id=bridge_id, direction="mesh_to_tg")
+        self.logger.info("bridge_sent", instance=self.instance_id, bridge_id=bridge_id, direction="mesh_to_tg")
+        self.logger.info("bridge_complete", instance=self.instance_id, bridge_id=bridge_id, direction="mesh_to_tg")
 
     # --- Telegram Message Handlers ---
 
@@ -459,21 +459,24 @@ class MessageProcessor:
             self.logger.info("Message forwarding to Meshtastic is disabled, skipping Telegram text message.")
             return
         bridge_id = new_id()
-        log_event(self.logger, 20, "bridge_start", instance=self.instance_id, bridge_id=bridge_id, direction="tg_to_mesh")
+        self.logger.info("bridge_start", instance=self.instance_id, bridge_id=bridge_id, direction="tg_to_mesh")
         sender = str(message['sender'])[:10]
         recipient = self.config.get('meshtastic.default_node_id')
         text = str(message['text'])
         telegram_message_id = cast(int, message['message_id'])
         telegram_thread_id = cast(int, message['thread_id'])
         meshtastic_message = f"[TG:{sender}] {text}"
-        channel = None
+        channel: int | None = None
 
         use_topics = self.config.get('telegram.use_topics', False)
         if use_topics:
             topics = self.config.get('topics', {})
             for key, value in topics.items():
                 if key.startswith('channel') and value == telegram_thread_id:
-                    channel = key.split('channel')[-1]
+                    try:
+                        channel = int(key.split('channel')[-1])
+                    except Exception:
+                        channel = None
                     break
 
         try:
@@ -482,14 +485,14 @@ class MessageProcessor:
                 'telegram_message_id': telegram_message_id,
                 'telegram_thread_id': telegram_thread_id,
                 'timestamp': datetime.now(timezone.utc),
-                'bridge_id': bridge_id
+                'bridge_id': bridge_id,
             }
             _ = asyncio.create_task(self.remove_pending_ack(meshtastic_message_id))
-            log_event(self.logger, 20, "bridge_sent", instance=self.instance_id, bridge_id=bridge_id, direction="tg_to_mesh", meshtastic_message_id=meshtastic_message_id)
+            self.logger.info("bridge_sent", instance=self.instance_id, bridge_id=bridge_id, direction="tg_to_mesh", meshtastic_message_id=meshtastic_message_id)
         except Exception as e:
             self.logger.error(f"Failed to send message to Meshtastic: {e}", exc_info=True)
             await self.telegram.send_message("Failed to send message to Meshtastic. Please try again.", topic=str(telegram_thread_id))
-            log_event(self.logger, 40, "bridge_error", instance=self.instance_id, bridge_id=bridge_id, direction="tg_to_mesh", error=str(e))
+            self.logger.error("bridge_error", instance=self.instance_id, bridge_id=bridge_id, direction="tg_to_mesh", error=str(e))
 
     async def handle_telegram_command(self, message: TelegramMessage) -> None:  # type: ignore[override]
         """Process a Telegram command message.
@@ -514,7 +517,7 @@ class MessageProcessor:
                 except Exception as e:  # pragma: no cover - network
                     self.logger.debug(f"Failed replying to command /{command}: {e}")
 
-        log_event(self.logger, 20, "tg_cmd_rx", instance=self.instance_id, command=command, user_id=user_id)
+        self.logger.info("tg_cmd_rx", instance=self.instance_id, command=command, user_id=user_id)
 
         if command == 'status':
             node_count = len(self.node_manager.get_all_nodes())
@@ -537,12 +540,12 @@ class MessageProcessor:
             if target in self.reports:
                 new_val = (command == 'enable')
                 self.reports[target] = new_val  # type: ignore[index]
-                log_event(self.logger, 20, "tg_cmd_feature_toggle", instance=self.instance_id, feature=target, value=new_val)
+                self.logger.info("tg_cmd_feature_toggle", instance=self.instance_id, feature=target, value=new_val)
                 await _reply(f"Feature {target} set to {'enabled' if new_val else 'disabled'}")
             elif target in ('forwarding', 'message_forwarding', 'forward'):
                 new_val = (command == 'enable')
                 self.forwarding_enabled = new_val
-                log_event(self.logger, 20, "tg_cmd_forwarding_toggle", instance=self.instance_id, value=new_val)
+                self.logger.info("tg_cmd_forwarding_toggle", instance=self.instance_id, value=new_val)
                 await _reply(f"Forwarding set to {'enabled' if new_val else 'disabled'}")
             else:
                 await _reply(f"Unknown feature: {target}")
@@ -589,14 +592,14 @@ class MessageProcessor:
         body = f"[TG:LOC] {lat},{lon}"
         try:
             _ = await self.meshtastic.send_message(body, recipient)
-            log_event(self.logger, 20, "bridge_sent", instance=self.instance_id, direction="tg_to_mesh", kind="location")
+            self.logger.info("bridge_sent", instance=self.instance_id, direction="tg_to_mesh", kind="location")
         except Exception as e:  # pragma: no cover - network
             self.logger.error(f"Failed to forward location: {e}")
 
     async def handle_telegram_reaction(self, message: TelegramMessage) -> None:  # type: ignore[override]
         """Currently just log reactions; could map to mesh actions later."""
         emoji = message.get('emoji')
-        log_event(self.logger, 10, "tg_reaction", instance=self.instance_id, emoji=emoji)
+        self.logger.debug("tg_reaction", instance=self.instance_id, emoji=emoji)
 
     # --- (Re)Added Meshtastic App Handlers ---
 
@@ -616,7 +619,7 @@ class MessageProcessor:
         raw_id = packet.get('fromId')
         self.logger.info(f"[Meshtastic] Handling nodeinfo from={raw_id}")
         if not self._valid_node_id(raw_id):
-            log_event(self.logger, 30, "mt_node_id_invalid", instance=self.instance_id, app="nodeinfo", raw_id=raw_id)
+            self.logger.warning("mt_node_id_invalid", instance=self.instance_id, app="nodeinfo", raw_id=raw_id)
             self.logger.warning(f"[Meshtastic] Invalid nodeinfo id ignored id={raw_id}")
             return
         node_id: str = str(raw_id)
@@ -634,7 +637,7 @@ class MessageProcessor:
         raw_id = packet.get('fromId')
         self.logger.info(f"[Meshtastic] Handling position from={raw_id}")
         if not self._valid_node_id(raw_id):
-            log_event(self.logger, 30, "mt_node_id_invalid", instance=self.instance_id, app="position", raw_id=raw_id)
+            self.logger.warning("mt_node_id_invalid", instance=self.instance_id, app="position", raw_id=raw_id)
             self.logger.warning(f"[Meshtastic] Invalid position id ignored id={raw_id}")
             return
         node_id = str(raw_id)
@@ -660,7 +663,7 @@ class MessageProcessor:
         raw_id = packet.get('fromId')
         self.logger.info(f"[Meshtastic] Handling telemetry from={raw_id}")
         if not self._valid_node_id(raw_id):
-            log_event(self.logger, 30, "mt_node_id_invalid", instance=self.instance_id, app="telemetry", raw_id=raw_id)
+            self.logger.warning("mt_node_id_invalid", instance=self.instance_id, app="telemetry", raw_id=raw_id)
             self.logger.warning(f"[Meshtastic] Invalid telemetry id ignored id={raw_id}")
             return
         node_id = str(raw_id)
@@ -683,14 +686,14 @@ class MessageProcessor:
         elif 'deviceMetrics' in admin_message:
             raw_id = packet.get('fromId')
             if not self._valid_node_id(raw_id):
-                log_event(self.logger, 30, "mt_node_id_invalid", instance=self.instance_id, app="admin_deviceMetrics", raw_id=raw_id)
+                self.logger.warning("mt_node_id_invalid", instance=self.instance_id, app="admin_deviceMetrics", raw_id=raw_id)
                 self.logger.warning(f"[Meshtastic] Invalid admin deviceMetrics id ignored id={raw_id}")
             else:
                 await self._handle_device_metrics(str(raw_id), admin_message['deviceMetrics'])
         elif 'position' in admin_message:
             raw_id = packet.get('fromId')
             if not self._valid_node_id(raw_id):
-                log_event(self.logger, 30, "mt_node_id_invalid", instance=self.instance_id, app="admin_position", raw_id=raw_id)
+                self.logger.warning("mt_node_id_invalid", instance=self.instance_id, app="admin_position", raw_id=raw_id)
                 self.logger.warning(f"[Meshtastic] Invalid admin position id ignored id={raw_id}")
             else:
                 await self._handle_position(str(raw_id), admin_message['position'])

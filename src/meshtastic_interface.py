@@ -10,8 +10,9 @@ from meshtastic import tcp_interface, serial_interface
 from meshtastic.serial_interface import SerialInterface
 from meshtastic.tcp_interface import TCPInterface
 from pubsub import pub
-from config_manager import ConfigManager, get_logger
-from logging_utils import log_event, new_id
+from config_manager import ConfigManager
+from logging_utils import get_logger
+from logging_utils import new_id, StructuredLogger
 from node_manager import NodeManager
 import socket
 import io
@@ -45,7 +46,7 @@ class PendingMessage:
 
 class MeshtasticInterface:
     config: ConfigManager
-    logger: logging.Logger
+    logger: StructuredLogger
     interface: SerialInterface | TCPInterface | None
     message_queue: asyncio.Queue[dict[str, object]]
     thread_safe_queue: queue.Queue[dict[str, object]]
@@ -62,7 +63,8 @@ class MeshtasticInterface:
     def __init__(self, config: ConfigManager) -> None:
         """Initialize interface state but do not connect yet."""
         self.config = config
-        self.logger = get_logger(__name__)
+        # get_logger() returns a StructuredLogger at runtime via configure_logging
+        self.logger = cast(StructuredLogger, get_logger(__name__))
         self.instance_id = new_id()
         self.interface = None
         self.message_queue = asyncio.Queue()
@@ -80,17 +82,17 @@ class MeshtasticInterface:
     async def setup(self) -> None:
         """Create the low-level meshtastic interface and subscribe for packets."""
         # Begin setup (structured event replaces verbose human log)
-        log_event(self.logger, logging.INFO, "meshtastic_setup_begin", instance=self.instance_id)
+        self.logger.info("meshtastic_setup_begin", instance=self.instance_id)
         try:
             self.interface = await self._create_interface()
             self.logger.debug(f"Meshtastic interface created:\n{self.interface.myInfo}")
             _ = pub.subscribe(self.on_meshtastic_message, "meshtastic.receive")
             await self._fetch_node_info()
             self.is_setup = True
-            log_event(self.logger, logging.INFO, "meshtastic_setup_complete", instance=self.instance_id, node_id=self.my_node_id)
+            self.logger.info("meshtastic_setup_complete", instance=self.instance_id, node_id=self.my_node_id)
         except Exception as e:
             self.logger.error(f"Failed to set up Meshtastic interface: {e=}", exc_info=True)
-            log_event(self.logger, logging.ERROR, "meshtastic_setup_error", instance=self.instance_id, error=str(e))
+            self.logger.error("meshtastic_setup_error", instance=self.instance_id, error=str(e))
             raise
 
     async def _create_interface(self) -> SerialInterface | TCPInterface:
@@ -116,18 +118,19 @@ class MeshtasticInterface:
                 return
             raw_info = await asyncio.to_thread(self.interface.getMyNodeInfo)
             if not isinstance(raw_info, dict):
-                log_event(self.logger, logging.ERROR, "mt_node_info_type_error", instance=self.instance_id)
+                self.logger.error("mt_node_info_type_error", instance=self.instance_id)
                 return
             user_part = raw_info.get('user')
             node_id = user_part.get('id') if isinstance(user_part, dict) else None
             self.my_node_id = node_id if isinstance(node_id, str) else ""
             if self.my_node_id:
-                log_event(self.logger, logging.INFO, "mt_node_info_received", instance=self.instance_id, node_id=self.my_node_id)
+                self.logger.info("mt_node_info_received", instance=self.instance_id, node_id=self.my_node_id)
+                self.logger.info(f"Node info: {raw_info}")
             else:
-                log_event(self.logger, logging.ERROR, "mt_node_info_missing_id", instance=self.instance_id)
+                self.logger.error("mt_node_info_missing_id", instance=self.instance_id)
         except Exception as e:
             self.logger.error(f"Failed to get node info: {e=}", exc_info=True)
-            log_event(self.logger, logging.ERROR, "mt_node_info_error", instance=self.instance_id, error=str(e))
+            self.logger.error("mt_node_info_error", instance=self.instance_id, error=str(e))
 
     def on_meshtastic_message(self, packet: dict[str, object], interface: object | None = None, **_extra: object) -> None:
         """PubSub callback when a Meshtastic packet arrives (thread context).
@@ -140,9 +143,7 @@ class MeshtasticInterface:
         )
         try:
             portnum = packet.get('decoded', {}).get('portnum')
-            log_event(
-                self.logger,
-                logging.DEBUG,
+            self.logger.debug(
                 "packet_rx",
                 instance=self.instance_id,
                 from_id=str(packet.get('fromId', '')),
@@ -160,9 +161,7 @@ class MeshtasticInterface:
     def handle_ack(self, packet: dict[str, object]) -> None:
         """Convert ACK packets into simplified dicts and enqueue them in the async queue."""
         try:
-            log_event(
-                self.logger,
-                logging.DEBUG,
+            self.logger.debug(
                 "mt_ack_rx",
                 instance=self.instance_id,
                 from_id=str(packet.get('fromId', '')),
@@ -195,10 +194,10 @@ class MeshtasticInterface:
             iface = self._require_interface()
             await asyncio.to_thread(iface.sendReaction, emoji, messageId=message_id)  # type: ignore[attr-defined]
             self.logger.info(f"Reaction {emoji} sent for message {message_id}")
-            log_event(self.logger, logging.INFO, "mt_reaction_sent", instance=self.instance_id, emoji=emoji, message_id=message_id)
+            self.logger.info("mt_reaction_sent", instance=self.instance_id, emoji=emoji, message_id=message_id)
         except Exception as e:
             self.logger.error(f"Error sending reaction to Meshtastic: {e=}", exc_info=True)
-            log_event(self.logger, logging.ERROR, "mt_reaction_error", instance=self.instance_id, emoji=emoji, message_id=message_id, error=str(e))
+            self.logger.error("mt_reaction_error", instance=self.instance_id, emoji=emoji, message_id=message_id, error=str(e))
 
     async def send_message(self, text: str, recipient: str, channel: int | None = None) -> int:
         """Send a text message; queues for retry on failure.
@@ -209,8 +208,7 @@ class MeshtasticInterface:
             raise ValueError("Text and recipient must not be empty")
         if len(text) > MESSAGE_MAX_LEN:
             raise ValueError("Message too long")
-
-        log_event(self.logger, logging.INFO, "mt_send_attempt", instance=self.instance_id, recipient=recipient, channel=channel, size=len(text))
+        self.logger.info("mt_send_attempt", instance=self.instance_id, recipient=recipient, channel=channel, size=len(text))
         try:
             explicit_channel = channel is not None
             if channel is None:
@@ -224,12 +222,12 @@ class MeshtasticInterface:
                 result = await asyncio.to_thread(iface.sendText, text, destinationId=recipient, channelIndex=int(channel))  # type: ignore[attr-defined]
             else:
                 result = await asyncio.to_thread(iface.sendText, text, destinationId=recipient)  # type: ignore[attr-defined]
-            log_event(self.logger, logging.INFO, "mt_send_success", instance=self.instance_id, recipient=recipient, channel=channel, message_id=getattr(result, 'id', None))
+            self.logger.info("mt_send_success", instance=self.instance_id, recipient=recipient, channel=channel, message_id=getattr(result, 'id', None))
             self.logger.debug(f"{result=}")
             return result.id  # Return the message ID for tracking
         except Exception as e:
             self.logger.error(f"Error sending message to Meshtastic: {e=}", exc_info=True)
-            log_event(self.logger, logging.ERROR, "mt_send_failure", instance=self.instance_id, recipient=recipient, channel=channel, error=str(e))
+            self.logger.error("mt_send_failure", instance=self.instance_id, recipient=recipient, channel=channel, error=str(e))
             self.pending_messages.append(PendingMessage(text, recipient))
             return -1  # Indicate failure to send
 
@@ -237,15 +235,15 @@ class MeshtasticInterface:
         """Send a bell (notification) to a specific destination node id."""
         if not dest_id:
             raise ValueError("Destination ID must not be empty")
-        log_event(self.logger, logging.INFO, "mt_bell_attempt", instance=self.instance_id, dest_id=dest_id)
+        self.logger.info("mt_bell_attempt", instance=self.instance_id, dest_id=dest_id)
         try:
             iface = self._require_interface()
             result = await asyncio.to_thread(iface.sendText, "🔔", destinationId=dest_id)  # type: ignore[attr-defined]
-            log_event(self.logger, logging.INFO, "mt_bell_success", instance=self.instance_id, dest_id=dest_id, message_id=getattr(result, 'id', None))
+            self.logger.info("mt_bell_success", instance=self.instance_id, dest_id=dest_id, message_id=getattr(result, 'id', None))
             return result.id  # Return the message ID for tracking
         except Exception as e:
             self.logger.error(f"Error sending bell to node {dest_id}: {e}", exc_info=True)
-            log_event(self.logger, logging.ERROR, "mt_bell_error", instance=self.instance_id, dest_id=dest_id, error=str(e))
+            self.logger.error("mt_bell_error", instance=self.instance_id, dest_id=dest_id, error=str(e))
             raise
 
     async def process_pending_messages(self) -> None:
@@ -256,18 +254,18 @@ class MeshtasticInterface:
                 if (message.last_attempt is None or (current_time - message.last_attempt) > timedelta(seconds=self.retry_interval)):
                     if message.attempts < self.max_retries:
                         try:
-                            log_event(self.logger, logging.DEBUG, "mt_retry_attempt", instance=self.instance_id, recipient=message.recipient, attempts=message.attempts)
+                            self.logger.debug("mt_retry_attempt", instance=self.instance_id, recipient=message.recipient, attempts=message.attempts)
                             await self.send_message(message.text, message.recipient)
                             self.pending_messages.remove(message)
-                            log_event(self.logger, logging.INFO, "mt_retry_success", instance=self.instance_id, recipient=message.recipient)
+                            self.logger.info("mt_retry_success", instance=self.instance_id, recipient=message.recipient)
                         except Exception:
                             message.attempts += 1
                             message.last_attempt = current_time
-                            log_event(self.logger, logging.WARNING, "mt_retry_failed", instance=self.instance_id, recipient=message.recipient, attempts=message.attempts)
+                            self.logger.warning("mt_retry_failed", instance=self.instance_id, recipient=message.recipient, attempts=message.attempts)
                     else:
                         self.logger.warning(f"Max retries reached for message: {message.text}")
                         self.pending_messages.remove(message)
-                        log_event(self.logger, logging.ERROR, "mt_retry_giveup", instance=self.instance_id, recipient=message.recipient)
+                        self.logger.error("mt_retry_giveup", instance=self.instance_id, recipient=message.recipient)
             await asyncio.sleep(self.retry_interval)
 
     async def process_thread_safe_queue(self) -> None:
@@ -277,7 +275,7 @@ class MeshtasticInterface:
                 packet = self.thread_safe_queue.get_nowait()
                 await self.message_queue.put(packet)
                 try:
-                    log_event(self.logger, logging.DEBUG, "enqueue_packet", instance=self.instance_id)
+                    self.logger.debug("enqueue_packet", instance=self.instance_id)
                 except Exception:
                     pass
             except queue.Empty:
@@ -320,12 +318,12 @@ class MeshtasticInterface:
             pub.unsubscribe(self.on_meshtastic_message, "meshtastic.receive")
         except Exception as e:
             self.logger.error(f"Error closing Meshtastic interface: {e}", exc_info=True)
-            log_event(self.logger, logging.ERROR, "meshtastic_close_error", instance=self.instance_id, error=str(e))
+            self.logger.error("meshtastic_close_error", instance=self.instance_id, error=str(e))
         finally:
             self.is_setup = False
             self.is_closing = False
             self.logger.info("Meshtastic interface closed.")
-            log_event(self.logger, logging.INFO, "meshtastic_closed", instance=self.instance_id)
+            self.logger.info("meshtastic_closed", instance=self.instance_id)
 
     async def reconnect(self) -> None:
         """Attempt to recreate the underlying interface."""
@@ -358,28 +356,28 @@ class MeshtasticInterface:
         """Continuously verify interface health and auto-reconnect if needed."""
         while True:
             self.logger.debug("Performing periodic health check...")
-            log_event(self.logger, logging.DEBUG, "mt_health_check", instance=self.instance_id)
+            self.logger.debug("mt_health_check", instance=self.instance_id)
             if self.interface is None:
                 self.logger.warning("Meshtastic interface is not initialized, attempting to reconnect...")
-                log_event(self.logger, logging.WARNING, "mt_health_missing_interface", instance=self.instance_id)
+                self.logger.warning("mt_health_missing_interface", instance=self.instance_id)
                 await self.reconnect()
                 continue
             try:
                 info = await asyncio.wait_for(asyncio.to_thread(self.getNodeInfo), timeout=5)
                 if info == -1 or info is None:
                     self.logger.error("Health check failed: Invalid or no node info received. Attempting to reconnect...")
-                    log_event(self.logger, logging.ERROR, "mt_health_invalid", instance=self.instance_id)
+                    self.logger.error("mt_health_invalid", instance=self.instance_id)
                     await self.reconnect()
                     continue
                 self.logger.debug(f"Health check = {info}")
-                log_event(self.logger, logging.DEBUG, "mt_health_ok", instance=self.instance_id)
+                self.logger.debug("mt_health_ok", instance=self.instance_id)
             except Exception as e:
                 if isinstance(e, TimeoutError):
                     self.logger.error("Health check failed: Timeout while retrieving node info.")
-                    log_event(self.logger, logging.ERROR, "mt_health_timeout", instance=self.instance_id)
+                    self.logger.error("mt_health_timeout", instance=self.instance_id)
                 else:
                     self.logger.error(f"Health check failed: {e}", exc_info=True)
-                    log_event(self.logger, logging.ERROR, "mt_health_error", instance=self.instance_id, error=str(e))
+                    self.logger.error("mt_health_error", instance=self.instance_id, error=str(e))
                 await self.reconnect()
             await asyncio.sleep(HEALTH_CHECK_INTERVAL_SECONDS)  # Check periodically
 
@@ -387,7 +385,7 @@ class MeshtasticInterface:
         """Run external script for environment metrics and forward to mesh periodically."""
         telemetry_config = self.config.get('telemetry', {})
         if not telemetry_config.get('environment_enabled', False):
-            log_event(self.logger, logging.INFO, "mt_telemetry_disabled", instance=self.instance_id)
+            self.logger.info("mt_telemetry_disabled", instance=self.instance_id)
             return
 
         script_path = self.config.get('telemetry', {}).get('environment_script', 'echo')
@@ -395,7 +393,7 @@ class MeshtasticInterface:
 
         while True:
             self.logger.debug("Running environment telemetry script...")
-            log_event(self.logger, logging.DEBUG, "mt_telemetry_script_start", instance=self.instance_id, script=script_path)
+            self.logger.debug("mt_telemetry_script_start", instance=self.instance_id, script=script_path)
             try:
                 process = await asyncio.create_subprocess_shell(
                     script_path,
@@ -406,7 +404,7 @@ class MeshtasticInterface:
 
                 if process.returncode != 0:
                     self.logger.error(f"Telemetry script error (code {process.returncode}): {stderr.decode().strip()}")
-                    log_event(self.logger, logging.ERROR, "mt_telemetry_script_error", instance=self.instance_id, code=process.returncode)
+                    self.logger.error("mt_telemetry_script_error", instance=self.instance_id, code=process.returncode)
                 else:
                     output = stdout.decode().strip()
                     self.logger.debug(f"Telemetry script output:\n{output}")
@@ -427,17 +425,17 @@ class MeshtasticInterface:
                                         self.logger.warning(f"Unsupported telemetry field type for {key}: {field_type}")
                                 except ValueError as ve:
                                     self.logger.error(f"Invalid value for {key}: {value} ({ve})")
-                                    log_event(self.logger, logging.WARNING, "mt_telemetry_parse_error", instance=self.instance_id, field=key)
+                                    self.logger.warning("mt_telemetry_parse_error", instance=self.instance_id, field=key)
                             else:
                                 self.logger.warning(f"Unknown telemetry field: {key}")
-                                log_event(self.logger, logging.WARNING, "mt_telemetry_unknown_field", instance=self.instance_id, field=key)
+                                self.logger.warning("mt_telemetry_unknown_field", instance=self.instance_id, field=key)
                     # Structured publish event (mt_telemetry_publish) emitted below
                     self.logger.debug(f"Telemetry Data:\n{t}")
                     if self.interface:
                         self.interface.sendData(t, BROADCAST_ADDR, portnums_pb2.PortNum.TELEMETRY_APP)  # type: ignore[attr-defined]
-                        log_event(self.logger, logging.INFO, "mt_telemetry_publish", instance=self.instance_id)
+                        self.logger.info("mt_telemetry_publish", instance=self.instance_id)
             except Exception as e:
                 self.logger.error(f"Error running telemetry script: {e}", exc_info=True)
-                log_event(self.logger, logging.ERROR, "mt_telemetry_script_exception", instance=self.instance_id, error=str(e))
+                self.logger.error("mt_telemetry_script_exception", instance=self.instance_id, error=str(e))
 
             await asyncio.sleep(interval)

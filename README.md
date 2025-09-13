@@ -12,40 +12,46 @@ Connect your Meshtastic mesh network with Telegram group chats! 📡💬
 - 🗺️ Location sharing between Telegram and Meshtastic
 - 🔐 User authorization for Telegram commands
 - 📝 Optional logging to file and syslog
-- Cache learned nodes to nodes.json
+- Cache learned nodes to cache.db (sqlite)
 - Respond to /ping command from mestastic node
 
 ## 🛠 Requirements
 
-- Python 3.12+ 🐍
+- Python 3.11+ 🐍
 - Dependencies:
   - `envyaml`: For YAML configuration file parsing with environment variable support
   - `meshtastic`: Python API for Meshtastic devices
   - `python-telegram-bot`: Telegram Bot API wrapper
   - `pubsub`: For publish-subscribe messaging pattern
+  - `sqlitedict`: Lightweight persistent dict used for node cache
 
 ## 🚀 Quick Start
 
 1. **Clone the repo:**
-   ```bash
+   
+  ```bash
    git clone https://github.com/gretel/meshgram.git
    cd meshgram
    ```
 
-2. **Set up a virtual environment:**
-   ```bash
+1. **Set up a virtual environment:**
+
+  ```bash
    python3 -m venv venv
    source venv/bin/activate
    ```
 
-3. **Install dependencies:**
-   ```bash
+1. **Install dependencies:**
+
+  ```bash
    pip install -r requirements.txt
    ```
 
-4. **Configure the project:**
-   Create a `config.yaml` file in the `config` directory:
-   ```yaml
+1. **Configure the project:**
+   
+  Create a `config.yaml` file in the `config` directory:
+
+  ```yaml
    telegram:
      bot_token: "your_bot_token_here"
      chat_id: -1001234567890 
@@ -66,9 +72,6 @@ Connect your Meshtastic mesh network with Telegram group chats! 📡💬
      #  - 0
      #  - 1
      #  - 2
-     #local_nodes:
-     #  - "!abcdef12"
-     #  - "!12345678"
 
    reports:
       telemetry: True
@@ -78,8 +81,8 @@ Connect your Meshtastic mesh network with Telegram group chats! 📡💬
       - "LongFast" # 0
       - "MySecondaryChannel" # 1
 
-   # set the message_thread_id for each topic
-   # read this https://stackoverflow.com/a/75178418/420585 to learn how to get the message_thread_id
+  # set the message_thread_id for each topic
+  # read: https://stackoverflow.com/a/75178418/420585 to learn how to get the message_thread_id
    topics:
      telemetry: 907
      location: 909
@@ -93,8 +96,8 @@ Connect your Meshtastic mesh network with Telegram group chats! 📡💬
      environment_send_interval: 300  # in seconds, how often to send telemetry data
 
    logging:
-     level: "info"
-     level_telegram: "warn"
+     level: "info"          # root level
+     level_telegram: "warn"  # fine-tune noisy libs
      level_httpx: "warn"
      use_syslog: false
      syslog_host: "localhost"
@@ -102,10 +105,16 @@ Connect your Meshtastic mesh network with Telegram group chats! 📡💬
      syslog_protocol: "udp"
    ```
 
-5. **Run Meshgram:**
-   ```bash
-   python src/meshgram.py
-   ```
+1. **Run Meshgram:**
+
+  ```bash
+  python src/meshgram.py
+  ```
+
+On Linux using a serial device, ensure your user can access the port (e.g. /dev/ttyUSB0):
+
+- Add your user to the dialout group and re-login: `sudo usermod -a -G dialout "$USER"`
+- Verify permissions: `ls -l /dev/ttyUSB0`
 
 ## 📡 Telegram Commands
 
@@ -119,6 +128,12 @@ Connect your Meshtastic mesh network with Telegram group chats! 📡💬
 - `/disable <feature>` - Disable a feature
 - `/features` - Show features status
 - `/listnodes` - List known nodes
+
+Feature toggles you can control at runtime:
+
+- `forwarding` — bridge Telegram → Meshtastic messages on/off
+- Reporting features: `telemetry`, `location`, `nodes`
+  - Example: `/enable forwarding`, `/disable telemetry`
 
 ## 🤝 Contributing
 
@@ -134,52 +149,10 @@ Core identifiers:
 - instance: Per-component id (meshtastic interface, telegram interface, processor).
 - bridge_id: Correlates a single bridged flow (Meshtastic → Telegram or Telegram → Meshtastic) including retries and ACK.
 
-Bridge example (Telegram → Meshtastic):
+Caller information:
 
-```text
-event=bridge_start instance=5 bridge_id=91 direction=tg_to_mesh
-event=bridge_sent instance=5 bridge_id=91 direction=tg_to_mesh meshtastic_message_id=517
-event=ack_processed instance=5 bridge_id=91 message_id=517 telegram_message_id=1234
-event=bridge_complete instance=5 bridge_id=91 direction=tg_to_mesh
-```
-
-Bridge example (Meshtastic → Telegram, enriched metadata):
-
-```text
-event=bridge_start bridge_id=42 direction=mesh_to_tg from_id=!abcd1234 to_id=^all from_short=Base from_long=BasementNode
-event=bridge_meta bridge_id=42 direction=mesh_to_tg from_short=Base hops_away=1 hop_limit=3 hop_start=4 rssi=-72 snr=7.3 mqtt=false
-event=bridge_render bridge_id=42 direction=mesh_to_tg message_text="Hello world"
-event=bridge_sent bridge_id=42 direction=mesh_to_tg
-event=bridge_complete bridge_id=42 direction=mesh_to_tg
-```
-
-Ping command flow (from mesh):
-
-```text
-event=ping_command_rx bridge_id=77 from_short=NodeA channel=0 hops_away=0
-event=ping_command_reply_sent bridge_id=77 meshtastic_message_id=612 from_short=NodeA
-```
-
-ACK lifecycle:
-
-```text
-event=mt_send_attempt recipient=^all channel=0 size=42
-event=mt_send_success recipient=^all channel=0 message_id=517
-event=ack_processed bridge_id=91 message_id=517 telegram_message_id=1234
-```
-
-Retry lifecycle:
-
-```text
-event=mt_retry_attempt recipient=!abcd1234 attempts=2
-event=mt_retry_success recipient=!abcd1234
-```
-Or failure path:
-
-```text
-event=mt_retry_failed recipient=!abcd1234 attempts=5
-event=mt_retry_giveup recipient=!abcd1234
-```
+- Each log line includes a caller field in the format `filename:lineno` padded to a minimum width of 30 characters for easy scanning in terminals and log systems.
+- Caller attribution points to the original call site even when using the structured logger helpers.
 
 Selected event catalog (grouped):
 
@@ -207,5 +180,28 @@ Tips:
 - Correlate an entire bridge journey by grepping bridge_id.
 - Filter all enriched mesh→Telegram flows: `grep 'direction=mesh_to_tg'`.
 - Separate application runs by run_id if you archive logs across restarts.
+
+## ✍️ Message Formatting (Telegram)
+
+- Meshgram uses Telegram Markdown V2. Plain text is safely escaped to avoid parse errors.
+- A limited set of simple tags are supported and mapped to Markdown:
+  - `<b>…</b>` → `*…*` (bold)
+  - `<i>…</i>` → `_…_` (italic)
+  - `<u>…</u>` → `__…__` (underline)
+- Markdown links like `[title](https://example.com)` are preserved.
+
+## 🧪 Testing
+
+Run unit tests with pytest:
+
+```bash
+pytest -q
+```
+
+## ❗ Notes
+
+- Serial vs TCP: set `meshtastic.connection_type` and `meshtastic.device` accordingly.
+- Topic mapping: if `telegram.use_topics` is true, map `channelN` to Telegram thread IDs under `topics:`.
+- Caching: learned nodes are persisted to `cache.db` (sqlite) for faster startup.
 
 Happy meshing! 🎉

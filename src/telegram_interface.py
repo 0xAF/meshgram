@@ -11,8 +11,9 @@ from telegram.ext import (
 from telegram.constants import ParseMode
 from telegram.helpers import escape_markdown
 from telegram.error import BadRequest
-from config_manager import ConfigManager, get_logger
-from logging_utils import log_event, new_id
+from config_manager import ConfigManager
+from logging_utils import get_logger
+from logging_utils import new_id, StructuredLogger
 
 COMMAND_DEFAULT_TOPIC_ID = 1  # Fallback thread id when topics aren't in use
 MARKDOWN_VERSION = 2
@@ -25,7 +26,7 @@ class CommandData(TypedDict):
 
 class TelegramInterface:
     config: ConfigManager
-    logger: logging.Logger
+    logger: StructuredLogger
     bot: Bot | None
     application: Application | None  # type: ignore[type-arg]
     message_queue: asyncio.Queue[dict[str, Any]]
@@ -38,7 +39,9 @@ class TelegramInterface:
     def __init__(self, config: ConfigManager) -> None:
         """Create a Telegram interface (bot + application) but do not start polling yet."""
         self.config = config
-        self.logger = get_logger(__name__)
+        # Cast to StructuredLogger to satisfy type checker for kw-style logging
+        from typing import cast as _cast
+        self.logger = _cast(StructuredLogger, get_logger(__name__))
         self.instance_id = new_id()
         self.bot = None
         self.application = None  # type: ignore[assignment]
@@ -63,7 +66,7 @@ class TelegramInterface:
     async def setup(self) -> None:
         """Instantiate the Telegram Bot & Application and register command/message handlers."""
         # Structured event begins setup (removes redundant human-readable line)
-        log_event(self.logger, logging.INFO, "telegram_setup_begin", instance=self.instance_id)
+        self.logger.info("telegram_setup_begin", instance=self.instance_id)
         try:
             token = self.config.get('telegram.bot_token')
             if not token:
@@ -75,10 +78,10 @@ class TelegramInterface:
             self.chat_id = self.config.get('telegram.chat_id')
             if not self.chat_id:
                 raise ValueError("Telegram chat id not found in configuration")
-            log_event(self.logger, logging.INFO, "telegram_setup_complete", instance=self.instance_id, chat_id=self.chat_id)
+            self.logger.info("telegram_setup_complete", instance=self.instance_id, chat_id=self.chat_id)
         except Exception as e:
             self.logger.exception(f"Failed to set up telegram: {e}")
-            log_event(self.logger, logging.ERROR, "telegram_setup_error", instance=self.instance_id, error=str(e))
+            self.logger.error("telegram_setup_error", instance=self.instance_id, error=str(e))
             raise
 
     def _setup_handlers(self) -> None:
@@ -97,7 +100,7 @@ class TelegramInterface:
         if not self.application:
             self.logger.error("Telegram application not initialized")
             return
-        log_event(self.logger, logging.INFO, "telegram_polling_start", instance=self.instance_id)
+        self.logger.info("telegram_polling_start", instance=self.instance_id)
         try:
             await self.application.initialize()
             await self.application.start()
@@ -106,13 +109,13 @@ class TelegramInterface:
             await self._stop_event.wait()
         except Exception as e:
             self.logger.error(f"Error in Telegram polling: {e}", exc_info=True)
-            log_event(self.logger, logging.ERROR, "telegram_polling_error", instance=self.instance_id, error=str(e))
+            self.logger.error("telegram_polling_error", instance=self.instance_id, error=str(e))
         finally:
             await self._shutdown_polling()
 
     async def _shutdown_polling(self) -> None:
         """Stop polling and cleanly shut down the application."""
-        log_event(self.logger, logging.INFO, "telegram_polling_stop_begin", instance=self.instance_id)
+        self.logger.info("telegram_polling_stop_begin", instance=self.instance_id)
         if self.application and self.is_polling:
             try:
                 self.is_polling = False
@@ -120,16 +123,16 @@ class TelegramInterface:
                 await self.application.shutdown()
             except Exception as e:
                 self.logger.error(f"Error during Telegram shutdown: {e}", exc_info=True)
-                log_event(self.logger, logging.ERROR, "telegram_shutdown_error", instance=self.instance_id, error=str(e))
+                self.logger.error("telegram_shutdown_error", instance=self.instance_id, error=str(e))
         # Only emit stopped events once
         if not self.is_polling:
-            log_event(self.logger, logging.INFO, "telegram_polling_stopped", instance=self.instance_id)
+            self.logger.info("telegram_polling_stopped", instance=self.instance_id)
 
     async def on_telegram_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle normal text message (non-command) from Telegram user."""
         if update.message is None or update.effective_user is None:
             return
-        log_event(self.logger, logging.DEBUG, "tg_msg_rx", instance=self.instance_id, user_id=update.effective_user.id, message_id=update.message.message_id)
+        self.logger.debug("tg_msg_rx", instance=self.instance_id, user_id=update.effective_user.id, message_id=update.message.message_id)
         await self.message_queue.put({
             'text': update.message.text,
             'sender': update.effective_user.username or update.effective_user.first_name,
@@ -143,7 +146,7 @@ class TelegramInterface:
         """Handle location messages from the user and queue them for processing."""
         if update.message is None or update.message.location is None or update.effective_user is None:
             return
-        log_event(self.logger, logging.DEBUG, "tg_loc_rx", instance=self.instance_id, user_id=update.effective_user.id, message_id=update.message.message_id)
+        self.logger.debug("tg_loc_rx", instance=self.instance_id, user_id=update.effective_user.id, message_id=update.message.message_id)
         await self.message_queue.put({
             'location': {
                 'latitude': update.message.location.latitude,
@@ -159,7 +162,7 @@ class TelegramInterface:
         if update.message is None or update.message.reaction is None or update.effective_user is None:
             return
         self.logger.info(f"Received reaction: {update.message.reaction}")
-        log_event(self.logger, logging.DEBUG, "tg_reaction_rx", instance=self.instance_id, user_id=update.effective_user.id)
+        self.logger.debug("tg_reaction_rx", instance=self.instance_id, user_id=update.effective_user.id)
         if update.message.reply_to_message:
             await self.message_queue.put({
                 'type': 'reaction',
@@ -209,7 +212,7 @@ class TelegramInterface:
             '<b>': '*', '</b>': '*',
             '<i>': '_', '</i>': '_',
             # Underline not supported in Markdown V2; drop tags instead of mapping to bold
-            '<u>': '', '</u>': '',
+            '<u>': '__', '</u>': '__',
         }
         # Fast path if no angle bracket present
         if '<' not in text:
@@ -317,7 +320,7 @@ class TelegramInterface:
         # Attempt 1: raw (or lightly processed) content
         try:
             message = await self.bot.send_message(**send_kwargs)
-            log_event(self.logger, logging.DEBUG, "tg_send_success", instance=self.instance_id, message_id=message.message_id, topic=topic, attempt=1)
+            self.logger.debug("tg_send_success", instance=self.instance_id, message_id=message.message_id, topic=topic, attempt=1)
             return message.message_id
         except BadRequest as e:
             if "Can't parse entities" in str(e):
@@ -325,22 +328,22 @@ class TelegramInterface:
                 send_kwargs['text'] = self._escape_for_retry(text)
                 try:
                     message = await self.bot.send_message(**send_kwargs)
-                    log_event(self.logger, logging.DEBUG, "tg_send_success", instance=self.instance_id, message_id=message.message_id, topic=topic, attempt=2, fallback="escaped")
+                    self.logger.debug("tg_send_success", instance=self.instance_id, message_id=message.message_id, topic=topic, attempt=2, fallback="escaped")
                     return message.message_id
                 except Exception as e2:
                     self.logger.error(f"Failed fallback send Telegram message: {e2}", exc_info=True)
-                    log_event(self.logger, logging.ERROR, "tg_send_failure", instance=self.instance_id, error=str(e2), attempt=2)
+                    self.logger.error("tg_send_failure", instance=self.instance_id, error=str(e2), attempt=2)
                     return None
-            # Non-parse error BadRequest propagate to generic handler below
+            # Non-parse error BadRequest: log and return failure
             self.logger.error(f"Failed to send Telegram message (BadRequest): {e}", exc_info=True)
-            log_event(self.logger, logging.ERROR, "tg_send_failure", instance=self.instance_id, error=str(e), attempt=1)
+            self.logger.error("tg_send_failure", instance=self.instance_id, error=str(e), attempt=1)
             return None
         except Exception as e:
             if "Timed out" in str(e):
                 self.logger.error(f"TimedOut sending Telegram message: {e}")
             else:
                 self.logger.error(f"Failed to send Telegram message: {e}", exc_info=True)
-            log_event(self.logger, logging.ERROR, "tg_send_failure", instance=self.instance_id, error=str(e), attempt=1)
+            self.logger.error("tg_send_failure", instance=self.instance_id, error=str(e), attempt=1)
             return None
 
     async def edit_message(self, message_id: int, text: str) -> bool:
@@ -364,7 +367,7 @@ class TelegramInterface:
         }
         try:
             await self.bot.edit_message_text(**edit_kwargs)
-            log_event(self.logger, logging.DEBUG, "tg_edit_success", instance=self.instance_id, message_id=message_id, attempt=1)
+            self.logger.debug("tg_edit_success", instance=self.instance_id, message_id=message_id, attempt=1)
             return True
         except BadRequest as e:
             msg = str(e)
@@ -372,11 +375,11 @@ class TelegramInterface:
                 edit_kwargs['text'] = self._escape_for_retry(text)
                 try:
                     await self.bot.edit_message_text(**edit_kwargs)
-                    log_event(self.logger, logging.DEBUG, "tg_edit_success", instance=self.instance_id, message_id=message_id, attempt=2, fallback="escaped")
+                    self.logger.debug("tg_edit_success", instance=self.instance_id, message_id=message_id, attempt=2, fallback="escaped")
                     return True
                 except Exception as e2:
                     self.logger.error(f"Failed fallback edit Telegram message: {e2}", exc_info=True)
-                    log_event(self.logger, logging.ERROR, "tg_edit_failure", instance=self.instance_id, error=str(e2), message_id=message_id, attempt=2)
+                    self.logger.error("tg_edit_failure", instance=self.instance_id, error=str(e2), message_id=message_id, attempt=2)
                     return False
             if "Message to edit not found" in msg:
                 self.logger.warning(f"Message {message_id} not found for editing. Will send as new message.")
@@ -385,11 +388,11 @@ class TelegramInterface:
                 self.logger.info(f"Message {message_id} is not modified, no edit needed.")
                 return True
             self.logger.error(f"BadRequest error when editing message: {e}", exc_info=True)
-            log_event(self.logger, logging.WARNING, "tg_edit_warning", instance=self.instance_id, error=str(e), message_id=message_id, attempt=1)
+            self.logger.warning("tg_edit_warning", instance=self.instance_id, error=str(e), message_id=message_id, attempt=1)
             return False
         except Exception as e:
             self.logger.error(f"Failed to edit Telegram message: {e}", exc_info=True)
-            log_event(self.logger, logging.ERROR, "tg_edit_failure", instance=self.instance_id, error=str(e), message_id=message_id, attempt=1)
+            self.logger.error("tg_edit_failure", instance=self.instance_id, error=str(e), message_id=message_id, attempt=1)
             return False
 
     def is_user_authorized(self, user_id: int) -> bool:
@@ -408,7 +411,7 @@ class TelegramInterface:
             )
         except Exception as e:
             self.logger.error(f"Failed to add reaction to Telegram message: {e}", exc_info=True)
-            log_event(self.logger, logging.ERROR, "tg_reaction_failure", instance=self.instance_id, error=str(e), message_id=message_id)
+            self.logger.error("tg_reaction_failure", instance=self.instance_id, error=str(e), message_id=message_id)
 
     # --- Command Handlers ---
 

@@ -7,13 +7,15 @@ from asyncio import Task
 from meshtastic_interface import MeshtasticInterface
 from telegram_interface import TelegramInterface
 from message_processor import MessageProcessor
-from config_manager import ConfigManager, get_logger
-from logging_utils import log_event, new_id
+from config_manager import ConfigManager
+from logging_utils import get_logger, StructuredLogger
+from logging_utils import new_id
 
 class Meshgram:
     def __init__(self, config: ConfigManager) -> None:
         self.config = config
-        self.logger = get_logger(__name__)
+        from typing import cast as _cast
+        self.logger: StructuredLogger = _cast(StructuredLogger, get_logger(__name__))
         self.meshtastic: Optional[MeshtasticInterface] = None
         self.telegram: Optional[TelegramInterface] = None
         self.message_processor: Optional[MessageProcessor] = None
@@ -23,12 +25,12 @@ class Meshgram:
 
     async def setup(self) -> None:
         """Initialize all components."""
-        log_event(self.logger, 20, "startup_begin", run_id=self.run_id)
+        self.logger.info("startup_begin", run_id=self.run_id)
         try:
             self.meshtastic = await self._setup_meshtastic()
             self.telegram = await self._setup_telegram()
             self.message_processor = MessageProcessor(self.meshtastic, self.telegram, self.config)
-            log_event(self.logger, 20, "startup_complete", run_id=self.run_id)
+            self.logger.info("startup_complete", run_id=self.run_id)
         except Exception as e:
             self.logger.error(f"Error during setup: {e}", exc_info=True)
             await self.shutdown()
@@ -51,7 +53,8 @@ class Meshgram:
             return
 
         self.is_shutting_down = True
-        log_event(self.logger, 20, "shutdown_begin", run_id=self.run_id, tasks=len(self.tasks))
+        self.logger.info("shutdown_begin", run_id=self.run_id, tasks=len(self.tasks))
+
         # 1. Request cooperative stops first (polling & processor) before brute cancelling.
         try:
             if self.telegram:
@@ -78,8 +81,9 @@ class Meshgram:
                 await self.meshtastic.close()
         except Exception as e:
             self.logger.error(f"Error closing MeshtasticInterface: {e}", exc_info=True)
+
         # Structured shutdown completion event
-        log_event(self.logger, 20, "shutdown_complete", run_id=self.run_id)
+        self.logger.info("shutdown_complete", run_id=self.run_id)
 
     async def run(self) -> None:
         """Run the main application loop."""
@@ -88,7 +92,8 @@ class Meshgram:
         except Exception as e:
             self.logger.error(f"Failed to set up Meshgram: {e}", exc_info=True)
             return
-        log_event(self.logger, 20, "run_started", run_id=self.run_id)
+
+        self.logger.info("run_started", run_id=self.run_id)
         self.tasks = [
             asyncio.create_task(self.message_processor.process_messages()),
             asyncio.create_task(self.meshtastic.process_thread_safe_queue()),
@@ -97,6 +102,7 @@ class Meshgram:
             asyncio.create_task(self.meshtastic.periodic_health_check()),
             asyncio.create_task(self.meshtastic.periodic_telemetry_report()),
         ]
+
         try:
             await asyncio.gather(*self.tasks)
         except asyncio.CancelledError:
@@ -112,16 +118,17 @@ async def main() -> None:
     args = parser.parse_args()
 
     config = ConfigManager(args.config)
-    logger = get_logger(__name__)
+    from typing import cast as _cast
+    logger: StructuredLogger = _cast(StructuredLogger, get_logger(__name__))
 
     app = Meshgram(config)
     try:
         await app.run()
     except ExceptionGroup as eg:
         for i, e in enumerate(eg.exceptions, 1):
-            logger.error(f"Exception {i}: {e}", exc_info=e)
+            logger.error("run_exception", run_id=app.run_id, index=i, error=str(e), exc_info=e)
     except KeyboardInterrupt:
-        logger.info("Received keyboard interrupt.")
+        logger.info("keyboard_interrupt", run_id=app.run_id)
     # No explicit second shutdown call; run() already performs cleanup.
 
 if __name__ == '__main__':
