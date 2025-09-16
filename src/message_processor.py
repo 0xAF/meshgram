@@ -3,7 +3,9 @@ from __future__ import annotations
 # pyright: reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnknownVariableType=false, reportUnknownParameterType=false, reportAny=false
 
 import asyncio
+import signal
 from typing import TypedDict, Literal, Protocol, NotRequired, cast, Any, Dict
+import sqlite3
 from datetime import datetime, timezone, timedelta
 from telegram import Update, LinkPreviewOptions
 from telegram.constants import ParseMode
@@ -53,6 +55,7 @@ class Reports(TypedDict):
     nodes: bool
 
 class MeshCommands(TypedDict):
+    help: bool
     ping: bool
 
 # --- Main Processor ---
@@ -89,8 +92,26 @@ class MessageProcessor:
         }
         self.mesh_commands: MeshCommands = {
             'ping': config.get('meshtastic.commands.ping', False),
+            'help': config.get('meshtastic.commands.help', False),
         }
         self.forwarding_enabled: bool = config.get('telegram.enable_message_forwarding', False)
+
+        # Message persistence DB (direct sqlite3)
+        self._msgdb: sqlite3.Connection | None = None
+        try:
+            self._msgdb = sqlite3.connect("messages.db")
+            # Light tuning for reliability/perf; safe defaults
+            try:
+                self._msgdb.execute("PRAGMA journal_mode=WAL")
+                self._msgdb.execute("PRAGMA synchronous=NORMAL")
+            except Exception:
+                pass
+        except Exception as e:
+            self.logger.error(f"Failed to open messages.db: {e}", exc_info=True)
+            self._msgdb = None
+
+    # No pre-created tables; created lazily on first insert
+
 
     # --- Main Message Loops ---
 
@@ -121,9 +142,39 @@ class MessageProcessor:
                     'getRingtoneResponse' in message.get('decoded', {}).get('admin', {})
                 )
                 if not _is_ringtone:
+                    # Include cached shortName and longName if available
+                    from_id = message.get('fromId')
+                    to_id = message.get('toId')
+                    from_short_name = None
+                    from_long_name = None
+                    to_short_name = None
+                    to_long_name = None
+                    try:
+                        if isinstance(from_id, str):
+                            node = self.node_manager.nodes.get(from_id)
+                            if node:
+                                sn = node.get('shortName')
+                                ln = node.get('longName')
+                                if isinstance(sn, str) and sn.strip().lower() != "unknown":
+                                    from_short_name = sn.strip()
+                                if isinstance(ln, str) and ln.strip().lower() != "unknown":
+                                    from_long_name = ln.strip()
+                        if isinstance(to_id, str):
+                            node = self.node_manager.nodes.get(to_id)
+                            if node:
+                                sn = node.get('shortName')
+                                ln = node.get('longName')
+                                if isinstance(sn, str) and sn.strip().lower() != "unknown":
+                                    to_short_name = sn.strip()
+                                if isinstance(ln, str) and ln.strip().lower() != "unknown":
+                                    to_long_name = ln.strip()
+                    except Exception:
+                        pass
                     self.logger.info(
-                        f"[Meshtastic] RX packet type={message.get('decoded', {}).get('portnum')} "
-                        f"from={message.get('fromId')} raw_type={message.get('type')} id={message.get('id')}"
+                        "mt_packet_rx", portnum=message.get('decoded', {}).get('portnum'), raw_type=message.get('type'),
+                        from_id=from_id, from_sn=from_short_name, from_ln=from_long_name,
+                        to_id=to_id, to_sn=to_short_name, to_ln=to_long_name,
+                        message_id=message.get('id')
                     )
                 # dynamic packet dict access
                 self.logger.debug("mt_message_rx", instance=self.instance_id, portnum=message.get('decoded', {}).get('portnum'), from_id=message.get('fromId'))  # type: ignore[arg-type]
@@ -204,6 +255,12 @@ class MessageProcessor:
         if self.processing_tasks:
             await asyncio.gather(*self.processing_tasks, return_exceptions=True)
         self.processing_tasks.clear()
+        # Close message DB
+        try:
+            if self._msgdb is not None:
+                self._msgdb.close()
+        except Exception:
+            pass
         self.is_closing = False
         self._already_closed = True  # type: ignore[attr-defined]
         self.logger.info("processor_stop_complete", instance=self.instance_id)
@@ -212,38 +269,24 @@ class MessageProcessor:
 
     async def handle_meshtastic_message(self, packet: dict[str, object]) -> None:  # type: ignore[override]
         """Handle a non-ACK Meshtastic packet by resolving an app-specific handler."""
+        if packet.get('type') == 'ack':  # type: ignore[attr-defined]
+            await self.handle_ack(packet)
+            return
+
         # Human readable dispatch log (supplements structured events)
         is_ringtone = (
             packet.get('decoded', {}).get('portnum') == 'ADMIN_APP' and
             'getRingtoneResponse' in packet.get('decoded', {}).get('admin', {})
         )
         if not is_ringtone:
-            self.logger.info(
+            self.logger.debug(
                 f"[Meshtastic] Dispatching packet from={packet.get('fromId')} to={packet.get('toId')} "
                 f"type={packet.get('decoded', {}).get('portnum')} id={packet.get('id')}"
             )
-        if packet.get('type') == 'ack':  # type: ignore[attr-defined]
-            await self.handle_ack(packet)
-            return
 
         portnum = packet.get('decoded', {}).get('portnum', '')  # type: ignore[index, attr-defined]
         handler_name = f"handle_{portnum.lower()}" if isinstance(portnum, str) else f"handle_{portnum}"
         handler = getattr(self, handler_name, None)
-
-        sender = packet.get('fromId', 'unknown')  # type: ignore[attr-defined]
-        formatted_name = f"`{sender}`"
-        node = self.node_manager.nodes.get(sender)  # type: ignore[index]
-        short_name = sender
-        if node:
-            short_name = node.get('shortName', '')  # type: ignore[index, attr-defined]
-            long_name = node.get('longName', '')  # type: ignore[index, attr-defined]
-            if short_name and isinstance(short_name, str) and short_name.strip() and short_name.lower() != "unknown":
-                short_name = short_name.strip()
-            else:
-                short_name = sender
-            formatted_name += f" - `{short_name}`"
-            if long_name and isinstance(long_name, str) and long_name.strip() and long_name.lower() != "unknown":
-                formatted_name += f" - `{long_name}`"
 
         if handler:
             # if not (portnum == 'ADMIN_APP' and 'getRingtoneResponse' in packet.get('decoded', {}).get('admin', {})):
@@ -254,17 +297,16 @@ class MessageProcessor:
             pass
         else:
             self.logger.warning(
-                f"Unhandled Meshtastic message type: {portnum} from: {packet.get('fromId')} - {formatted_name}, packet:\n{packet}"
+                f"Unhandled Meshtastic message type: {portnum} from: {packet.get('fromId')}, packet:\n{packet}"
             )
 
     async def handle_ack(self, packet: dict[str, object]) -> None:  # type: ignore[override]
         """Process ACK updates: add reaction in Telegram and clear tracking map."""
         message_id = packet.get('request_id')
         if message_id is None:
-            self.logger.warning(f"Received ACK without message ID\n{packet=}\n")
+            # self.logger.warning(f"Received ACK without message ID\n{packet=}\n")
             self.logger.warning("ack_missing_id", instance=self.instance_id)
             return
-        self.logger.info(f"[Meshtastic] ACK received for message_id={message_id}")
 
         try:
             message_id_int = int(message_id)  # type: ignore[arg-type]
@@ -276,15 +318,16 @@ class MessageProcessor:
             telegram_message_id = pending_message.get('telegram_message_id')
             if telegram_message_id:
                 await self.telegram.add_reaction(telegram_message_id, '👌')
-                self.logger.info(f"ACK processed for message ID: {message_id}, Telegram message ID: {telegram_message_id}")
+                # self.logger.info(f"ACK processed for message ID: {message_id}, Telegram message ID: {telegram_message_id}")
                 self.logger.info("ack_processed", instance=self.instance_id, message_id=message_id_int, telegram_message_id=telegram_message_id, bridge_id=pending_message.get('bridge_id'))
+            else:
+                self.logger.info("ack_processed", instance=self.instance_id, message_id=message_id_int, telegram_message_id=None, bridge_id=pending_message.get('bridge_id'))
+        else:
+            self.logger.info(f"ack_processed", message_id=message_id)
 
     async def handle_text_message_app(self, packet: dict[str, object]) -> None:  # type: ignore[override]
         """Format and forward a Meshtastic text message to Telegram (enriched logging)."""
-        self.logger.info(
-            f"[Meshtastic] Handling text message from={packet.get('fromId')} to={packet.get('toId')} "
-            f"channel={packet.get('channel')}"
-        )
+        self.logger.info( "mt_handle_text", from_id=packet.get('fromId'), to_id=packet.get('toId'), channel=packet.get('channel'))
         bridge_id = new_id()
         sender = str(packet.get('fromId', 'unknown'))
         recipient = str(packet.get('toId', 'unknown'))
@@ -298,7 +341,8 @@ class MessageProcessor:
         except Exception:
             channel_num = 0
         ignored_channels = self.config.get('meshtastic.ignored_channels', [])  # type: ignore[assignment]
-        if channel_num in ignored_channels and not text.startswith('/ping'):
+        # ignore messages and commands on ignored channels
+        if channel_num in ignored_channels:
             return
 
         # Node metadata
@@ -325,7 +369,7 @@ class MessageProcessor:
 
             self.logger.info("bridge_start", instance=self.instance_id, bridge_id=bridge_id, direction="mesh_to_tg", from_id=sender, to_id=recipient, from_short=from_short, from_long=from_long, to_short=to_short, to_long=to_long)
 
-        # Metrics
+        # Metrics (used for command handlers and rendering)
         hops_start = packet.get('hopStart', 0)  # type: ignore[index]
         hops_limit = packet.get('hopLimit', 0)  # type: ignore[index]
         try:
@@ -335,37 +379,6 @@ class MessageProcessor:
         snr = packet.get('rxSnr', 'n/a')  # type: ignore[index]
         rssi = packet.get('rxRssi', 'n/a')  # type: ignore[index]
         mqtt = bool(packet.get('viaMqtt', 0))  # type: ignore[index]
-
-        # Ping shortcut
-        if self.mesh_commands.get('ping', False) and text.startswith('/ping'):
-            self.logger.info("ping_command_rx", instance=self.instance_id, bridge_id=bridge_id, sender=sender, recipient=recipient, from_short=from_short, to_short=to_short, channel=channel_num)
-            ping_text = f"{from_short} → HopsAway={hops_away}, HStart={hops_start}, HLimit={hops_limit}"
-            if rssi != 'n/a':
-                ping_text += f", RSSI={rssi}"
-            if snr != 'n/a':
-                ping_text += f", SNR={snr}"
-            try:
-                meshtastic_message_id = await self.meshtastic.send_message(ping_text, sender, channel=channel_num)
-                self.pending_acks[meshtastic_message_id] = {
-                    'telegram_message_id': 0,
-                    'telegram_thread_id': 0,
-                    'timestamp': datetime.now(timezone.utc)
-                }
-                self.logger.info("ping_command_reply_sent", instance=self.instance_id, bridge_id=bridge_id, meshtastic_message_id=meshtastic_message_id, from_short=from_short, to_short=to_short)
-            except Exception as e:
-                self.logger.error(f"Failed to send ping reply: {e}", exc_info=True)
-            # Continue to publish ping result to Telegram
-            text = ping_text
-
-        # Build outbound Telegram message (unchanged format except using from_short)
-        channel_label = f"[<u>CH{channel_num}</u>]"
-        channels = self.config.get('channels', [])  # type: ignore[assignment]
-        if channels and not recipient.startswith('!'):
-            try:
-                channel_name = channels[channel_num]
-                channel_label = f"[<u>{channel_name}</u>]"
-            except Exception:
-                pass
         # Signal quality and info formatting
         signal_emoji = "❓"
         signal_label = "Unknown"
@@ -414,19 +427,92 @@ class MessageProcessor:
         except Exception:
             pass
 
-        mqtt_label = " (MQTT)" if mqtt else ""
-        if mqtt:
-            message = (
-            f"💬 <b>{channel_label} <u>{from_short}</u>: </b>{text}\n\n"
-            f"📟 [`{from_short}`{(' - `' + from_long + '`') if from_long else ''}] → [`{to_short}`{(' - `' + to_long + '`') if to_long else ''}]\n"
-            f"↔️ Hops Away: {hops_away}, HL: {hops_limit}{mqtt_label}"
-            )
+        is_command = None
+        # Slash-command dispatch: parse "/command" and delegate to handler if present
+        if isinstance(text, str) and text.startswith('/'):
+            parts = text.split()
+            cmd = parts[0][1:].partition('@')[0].lower()
+            args = parts[1:]
+            handler_name = f"handle_mesh_cmd_{cmd}"
+            handler = getattr(self, handler_name, None)
+            if handler:
+                try:
+                    is_command = cmd
+                    text = await handler(
+                        sender=sender,
+                        recipient=recipient,
+                        channel_num=channel_num,
+                        hops_start=hops_start,
+                        hops_limit=hops_limit,
+                        hops_away=hops_away,
+                        mqtt=mqtt,
+                        rssi=rssi,
+                        snr=snr,
+                        bridge_id=bridge_id,
+                        args=args,
+                        from_short=from_short,
+                        to_short=to_short,
+                        signal_emoji=signal_emoji,
+                        signal_label=signal_label,
+                        reply_directly=self.config.get('meshtastic.reply_directly', False),
+                    )
+                except Exception as e:
+                    self.logger.error(f"Mesh command '/{cmd}' failed: {e}", exc_info=True)
+            # If no handler, fall through and forward the original text
+
+        # Persist message to sqlite3 (per-channel table or DIRECT_MESSAGES)
+        try:
+            if self._msgdb is not None:
+                if recipient.startswith('!'):
+                    table = 'DIRECT_MESSAGES'
+                else:
+                    channels = self.config.get('channels', [])  # type: ignore[assignment]
+                    table_name: str | None = None
+                    if channels:
+                        try:
+                            table_name = str(channels[channel_num])
+                        except Exception:
+                            table_name = None
+                    table = table_name if table_name else f"CHANNEL_{channel_num}"
+                    table = self._sanitize_identifier(table)
+                # Ensure table + index exist
+                self._ensure_table_and_index(table)
+                ts = datetime.now(timezone.utc).isoformat()
+                name_val = from_short if isinstance(from_short, str) and from_short else sender
+                long_name_val = from_long if isinstance(from_long, str) else ""
+                self._msgdb.execute(
+                    f"INSERT INTO {table} (timestamp, from_id, name, long_name, message) VALUES (?, ?, ?, ?, ?)",
+                    (ts, sender, name_val, long_name_val, text),
+                )
+                self._msgdb.commit()
+        except Exception as e:
+            self.logger.error(f"db_write_error: {e}", exc_info=True)
+
+        # Build outbound Telegram message (unchanged format except using from_short)
+        channel_label = f"[<u>CH{channel_num}</u>]"
+        channels = self.config.get('channels', [])  # type: ignore[assignment]
+        if channels and not recipient.startswith('!'):
+            try:
+                channel_name = channels[channel_num]
+                channel_label = f"[<u>{channel_name}</u>]"
+            except Exception:
+                pass
+
+        if is_command:
+            message = f"💻 <b>{channel_label} CMD: {is_command} `{sender}` - `{from_short}` - `{from_long}`</b>\n<u>[REPLY]</u>: {text}\n"
         else:
-            message = (
-                f"💬 <b>{channel_label} <u>{from_short}</u>: </b>{text}\n\n"
-                f"📟 [`{from_short}`{(' - `' + from_long + '`') if from_long else ''}] → [`{to_short}`{(' - `' + to_long + '`') if to_long else ''}]\n"
-                f"↔️ Hops Away: {hops_away}, HL: {hops_limit}, RSSI: {rssi}, SNR: {snr}, Signal: {signal_emoji} {signal_label}{mqtt_label}"
-            )
+            message = f"💬 <b>{channel_label} `{sender}` - `{from_long}`\n<u>`{from_short}`</u>: </b>{text}\n\n"
+
+        message += f"↔️ HAway: {hops_away}, HLimit: {hops_limit}"
+        if snr and snr != 'n/a':
+            message += f", SNR: {snr}dB"
+        if rssi and rssi != 'n/a':
+            message += f", RSSI: {rssi}dBm"
+        if signal_label != 'Unknown':
+            message += f", Signal: {signal_emoji} {signal_label}"
+        if mqtt:
+            message += " (MQTT)"
+
         # Emit meta + render events
         self.logger.info("bridge_meta", instance=self.instance_id, bridge_id=bridge_id, direction="mesh_to_tg", from_short=from_short, from_long=from_long, to_short=to_short, to_long=to_long, hops_away=hops_away, hop_limit=hops_limit, hop_start=hops_start, rssi=rssi, snr=snr, mqtt=mqtt)
         log_text = text.replace('\n', '\\n')
@@ -435,7 +521,32 @@ class MessageProcessor:
         self.logger.debug("bridge_render", instance=self.instance_id, bridge_id=bridge_id, direction="mesh_to_tg", message_text=log_text)
         _ = await self.telegram.send_message(message, disable_notification=False, topic=f"channel{channel_num}" if not recipient.startswith('!') else "default")
         self.logger.info("bridge_sent", instance=self.instance_id, bridge_id=bridge_id, direction="mesh_to_tg")
-        self.logger.info("bridge_complete", instance=self.instance_id, bridge_id=bridge_id, direction="mesh_to_tg")
+        # self.logger.info("bridge_complete", instance=self.instance_id, bridge_id=bridge_id, direction="mesh_to_tg")
+
+    # --- Persistence helpers ---
+    def _sanitize_identifier(self, name: str) -> str:
+        """Return a safe SQLite identifier consisting of A-Z, 0-9, and underscores.
+
+        If the name starts with a digit, prefix with T_. Collapse runs of
+        invalid characters into a single underscore.
+        """
+        safe = re.sub(r"[^A-Za-z0-9]+", "_", name).strip("_")
+        if not safe:
+            safe = "T"
+        if safe[0].isdigit():
+            safe = f"T_{safe}"
+        return safe.upper()
+
+    def _ensure_table_and_index(self, table: str) -> None:
+        if self._msgdb is None:
+            return
+        # Create schema lazily
+        self._msgdb.execute(
+            f"CREATE TABLE IF NOT EXISTS {table} (timestamp TEXT NOT NULL, from_id TEXT NOT NULL, name TEXT NOT NULL, long_name TEXT NOT NULL, message TEXT NOT NULL)"
+        )
+        self._msgdb.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_{table}_from_id ON {table}(from_id)"
+        )
 
     # --- Telegram Message Handlers ---
 
@@ -559,13 +670,19 @@ class MessageProcessor:
             await _reply(info_text)
             return
         if command == 'listnodes':
-            nodes = list(self.node_manager.get_all_nodes().keys())
-            if not nodes:
+            nodes_dict = self.node_manager.get_all_nodes()
+            if not nodes_dict:
                 await _reply("No nodes known yet.")
             else:
-                sample = nodes[:50]
-                more = '' if len(nodes) <= 50 else f"\n… and {len(nodes)-50} more"
-                await _reply("Known nodes:\n" + "\n".join(sample) + more)
+                lines: list[str] = []
+                for idx, (node_id, info) in enumerate(nodes_dict.items(), start=1):
+                    if not isinstance(info, dict):
+                        info = {}
+                    sn = info.get('shortName') or 'unknown'
+                    ln = info.get('longName') or 'unknown'
+                    lines.append(f"{idx}. `{node_id}` - {sn} - {ln}")
+                content = "Known nodes:\n" + "\n".join(lines)
+                await self.telegram.send_message(content, topic="default")
             return
         if command == 'bell':
             # Placeholder bell implementation: send a small marker to default node
@@ -603,6 +720,150 @@ class MessageProcessor:
 
     # --- (Re)Added Meshtastic App Handlers ---
 
+    # --- Mesh text-app slash command handlers ---
+    async def handle_mesh_cmd_ping(
+        self,
+        *,
+        sender: str,
+        recipient: str,
+        channel_num: int,
+        hops_start: int,
+        hops_limit: int,
+        hops_away: int,
+        mqtt: bool,
+        rssi: Any,
+        snr: Any,
+        bridge_id: int,
+        args: list[str],
+        from_short: str,
+        to_short: str,
+        signal_emoji: str,
+        signal_label: str, 
+        reply_directly: bool = False,
+    ) -> str:
+        """Handle '/ping' issued from the mesh text app and return the reply text.
+
+        Returns the text that should be displayed in Telegram for this command.
+        """
+        if not self.mesh_commands.get('ping', False):
+            return f"{from_short} → ping not enabled"
+
+        ping_text = f"{from_short} → HopsAway={hops_away}, HStart={hops_start}, HLimit={hops_limit}"
+        if rssi != 'n/a':
+            ping_text += f", RSSI={rssi}"
+        if snr != 'n/a':
+            ping_text += f", SNR={snr}"
+        ping_text += f", Signal={signal_emoji} {signal_label}"
+        ping_text += f", (MQTT)" if mqtt else ""
+
+        self.logger.info(
+            "ping_command_rx",
+            instance=self.instance_id,
+            bridge_id=bridge_id,
+            sender=sender,
+            recipient=recipient,
+            from_short=from_short,
+            to_short=to_short,
+            channel=channel_num,
+        )
+        sent_to = sender
+        if recipient == "^all": # channel message
+            send_to = "^all"
+        else:
+            channel_num = 0  # direct message
+        if reply_directly:
+            send_to = sender
+            channel_num = 0  # direct message
+
+        try:
+            meshtastic_message_id = await self.meshtastic.send_message(ping_text, send_to, channel=channel_num)
+            self.pending_acks[meshtastic_message_id] = {
+                'telegram_message_id': 0,
+                'telegram_thread_id': 0,
+                'timestamp': datetime.now(timezone.utc)
+            }
+            self.logger.info(
+                "ping_command_reply_sent",
+                instance=self.instance_id,
+                bridge_id=bridge_id,
+                meshtastic_message_id=meshtastic_message_id,
+                from_short=from_short,
+                to_short=to_short,
+            )
+        except Exception as e:
+            self.logger.error(f"Failed to send ping reply: {e}", exc_info=True)
+        return ping_text
+
+    async def handle_mesh_cmd_help(
+        self,
+        *,
+        sender: str,
+        recipient: str,
+        channel_num: int,
+        hops_start: int,
+        hops_limit: int,
+        hops_away: int,
+        mqtt: bool,
+        rssi: Any,
+        snr: Any,
+        bridge_id: int,
+        args: list[str],
+        from_short: str,
+        to_short: str,
+        signal_emoji: str,
+        signal_label: str,
+        reply_directly: bool = False,
+    ) -> str:
+        """Handle '/help' issued from the mesh text app and return the reply text."""
+        if not self.mesh_commands.get('help', False):
+            return f"{from_short} → help not enabled"
+
+        enabled_cmds = [name for name, on in self.mesh_commands.items() if on]
+        # Always show ping in help (if disabled, mark it accordingly)
+        cmds_line = "/ping" + (" (disabled)" if not self.mesh_commands.get('ping', False) else "")
+        help_text = (
+            "Mesh commands:\n"
+            f"• {cmds_line}\n"
+            "Use '/ping' to get link stats (hops, RSSI, SNR)."
+        )
+        self.logger.info(
+            "help_command_rx",
+            instance=self.instance_id,
+            bridge_id=bridge_id,
+            sender=sender,
+            recipient=recipient,
+            from_short=from_short,
+            to_short=to_short,
+            channel=channel_num,
+        )
+        sent_to = sender
+        if recipient == "^all": # channel message
+            send_to = "^all"
+        else:
+            channel_num = 0  # direct message
+        if reply_directly:
+            send_to = sender
+            channel_num = 0  # direct message
+        try:
+            meshtastic_message_id = await self.meshtastic.send_message(help_text, send_to, channel=channel_num)
+            self.pending_acks[meshtastic_message_id] = {
+                'telegram_message_id': 0,
+                'telegram_thread_id': 0,
+                'timestamp': datetime.now(timezone.utc)
+            }
+            self.logger.info(
+                "help_command_reply_sent",
+                instance=self.instance_id,
+                bridge_id=bridge_id,
+                meshtastic_message_id=meshtastic_message_id,
+                from_short=from_short,
+                to_short=to_short,
+            )
+        except Exception as e:
+            self.logger.error(f"Failed to send help reply: {e}", exc_info=True)
+        return help_text
+
+    
     async def handle_traceroute_app(self, _packet: Dict[str, Any]) -> None:
         self.logger.info("[Meshtastic] Traceroute app packet received (ignored)")
         return
@@ -617,25 +878,23 @@ class MessageProcessor:
 
     async def handle_nodeinfo_app(self, packet: Dict[str, Any]) -> None:
         raw_id = packet.get('fromId')
-        self.logger.info(f"[Meshtastic] Handling nodeinfo from={raw_id}")
         if not self._valid_node_id(raw_id):
             self.logger.warning("mt_node_id_invalid", instance=self.instance_id, app="nodeinfo", raw_id=raw_id)
             self.logger.warning(f"[Meshtastic] Invalid nodeinfo id ignored id={raw_id}")
             return
         node_id: str = str(raw_id)
         node_info: dict[str, Any] = packet.get('decoded', {})  # type: ignore[assignment]
-        self.node_manager.update_node(node_id, {
-            'shortName': node_info.get('user', {}).get('shortName', 'unknown'),
-            'longName': node_info.get('user', {}).get('longName', 'unknown'),
-            'hwModel': node_info.get('user', {}).get('hwModel', 'unknown')
-        })
+        # If "user" key exists in node_info, use it; otherwise use node_info itself
+        # info_to_update = node_info.get('user') if 'user' in node_info else node_info
+        # self.node_manager.update_node(node_id, info_to_update)
+        self.node_manager.update_node(node_id, node_info)
         if self.reports.get('nodes', True):
             info_text: str = self.node_manager.format_node_info(node_id)
             await self.telegram.send_or_edit_message('nodeinfo', node_id, info_text)
+        self.logger.info("mt_nodeinfo_handle", from_id=raw_id, short_name=node_info.get('user', {}).get('shortName'), long_name=node_info.get('user', {}).get('longName'))
 
     async def handle_position_app(self, packet: Dict[str, Any]) -> None:
         raw_id = packet.get('fromId')
-        self.logger.info(f"[Meshtastic] Handling position from={raw_id}")
         if not self._valid_node_id(raw_id):
             self.logger.warning("mt_node_id_invalid", instance=self.instance_id, app="position", raw_id=raw_id)
             self.logger.warning(f"[Meshtastic] Invalid position id ignored id={raw_id}")
@@ -658,10 +917,10 @@ class MessageProcessor:
                     )
                 except Exception as e:
                     self.logger.debug(f"Failed to send raw location map: {e}")
+        self.logger.info("mt_position_handle", from_id=raw_id, latitude=latitude, longitude=longitude)
 
     async def handle_telemetry_app(self, packet: Dict[str, Any]) -> None:
         raw_id = packet.get('fromId')
-        self.logger.info(f"[Meshtastic] Handling telemetry from={raw_id}")
         if not self._valid_node_id(raw_id):
             self.logger.warning("mt_node_id_invalid", instance=self.instance_id, app="telemetry", raw_id=raw_id)
             self.logger.warning(f"[Meshtastic] Invalid telemetry id ignored id={raw_id}")
@@ -673,6 +932,7 @@ class MessageProcessor:
         if self.reports.get('telemetry', True):
             telemetry_info = self.node_manager.get_node_telemetry(node_id)
             await self.telegram.send_or_edit_message('telemetry', node_id, telemetry_info)
+        self.logger.info("mt_telemetry_handle", from_id=raw_id, device_metrics=device_metrics)
 
     async def handle_admin_app(self, packet: dict[str, Any]) -> None:
         admin_message = packet.get('decoded', {}).get('admin', {})

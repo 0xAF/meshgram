@@ -120,12 +120,18 @@ class MeshtasticInterface:
             if not isinstance(raw_info, dict):
                 self.logger.error("mt_node_info_type_error", instance=self.instance_id)
                 return
+            # Keep node manager in sync using the correct id from node_info.user.id
+            if isinstance(raw_info, dict):
+                node_id = raw_info.get('user', {}).get('id')
+                self.logger.info(f"Updating my node info: {node_id} = {raw_info}")
+                self.node_manager.remove_node(node_id)
+                self.node_manager.update_node( node_id, cast(Dict[str, Any], raw_info.get('user', {})))
             user_part = raw_info.get('user')
             node_id = user_part.get('id') if isinstance(user_part, dict) else None
             self.my_node_id = node_id if isinstance(node_id, str) else ""
             if self.my_node_id:
                 self.logger.info("mt_node_info_received", instance=self.instance_id, node_id=self.my_node_id)
-                self.logger.info(f"Node info: {raw_info}")
+                # self.logger.info(f"Node info: {raw_info}")
             else:
                 self.logger.error("mt_node_info_missing_id", instance=self.instance_id)
         except Exception as e:

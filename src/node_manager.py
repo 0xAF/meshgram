@@ -149,21 +149,23 @@ class NodeManager:
         if node_id not in self.nodes:
             # Initialize minimal NodeData structure
             self.nodes[node_id] = NodeData(  # type: ignore[call-arg]
-                shortName='unknown', longName='unknown', hwModel='unknown',
-                batteryLevel=None, voltage=None, channelUtilization=None, airUtilTx=None,
-                temperature=None, relativeHumidity=None, barometricPressure=None,
-                gasResistance=None, current=None, latitude=None, longitude=None,
-                last_updated=datetime.now().isoformat(), last_position_update=None,
-                routing={}, neighbors={}, sensor={}
+                shortName='unknown', longName='unknown',
+                last_updated=datetime.now().isoformat(),
             )
+        if 'user' in data and isinstance(data['user'], dict):
+            data = data['user']
+        if "raw" in data:
+            del data["raw"]
         node = self.nodes[node_id]
         for key, value in data.items():
             if node.get(key) != value:  # type: ignore[index]
                 node[key] = value  # type: ignore[index]
         node['last_updated'] = datetime.now().isoformat()  # type: ignore[index]
         self.nodes[node_id] = node  # persist
-
+        # self.logger.info(f"Updated node {self.escape_node_id(node_id)} with data: {data}")
+    
     def update_node_telemetry(self, node_id: str, telemetry_data: Dict[str, Any]) -> None:
+        telemetry_data['last_telemetry_update'] = datetime.now().isoformat()
         self.update_node(node_id, telemetry_data)
 
     def update_node_position(self, node_id: str, position_data: Dict[str, Any]) -> None:
@@ -177,12 +179,15 @@ class NodeManager:
             })
 
     def update_node_routing(self, node_id: str, routing_info: Dict[str, Any]) -> None:
+        routing_info['last_routing_update'] = datetime.now().isoformat()
         self.update_node(node_id, {'routing': routing_info})
 
     def update_node_neighbors(self, node_id: str, neighbor_info: Dict[str, Any]) -> None:
+        neighbor_info['last_neightbor_update'] = datetime.now().isoformat()
         self.update_node(node_id, {'neighbors': neighbor_info})
 
     def update_node_sensor(self, node_id: str, sensor_data: Dict[str, Any]) -> None:
+        sensor_data['last_sensor_update'] = datetime.now().isoformat()
         self.update_node(node_id, {'sensor': sensor_data})
 
     def remove_node(self, node_id: str) -> None:

@@ -316,35 +316,107 @@ class TelegramInterface:
         }
         if t != 1:
             send_kwargs['message_thread_id'] = t
+        # If content fits in one Telegram message (4096 bytes of UTF-8), send directly with fallback
+        if len(content.encode('utf-8')) <= 4096:
+            try:
+                message = await self.bot.send_message(**send_kwargs)
+                self.logger.debug("tg_send_success", instance=self.instance_id, message_id=message.message_id, topic=topic, attempt=1)
+                return message.message_id
+            except BadRequest as e:
+                if "Can't parse entities" in str(e):
+                    # Fallback attempt with fully escaped markdown
+                    send_kwargs['text'] = self._escape_for_retry(text)
+                    try:
+                        message = await self.bot.send_message(**send_kwargs)
+                        self.logger.debug("tg_send_success", instance=self.instance_id, message_id=message.message_id, topic=topic, attempt=2, fallback="escaped")
+                        return message.message_id
+                    except Exception as e2:
+                        self.logger.error(f"Failed fallback send Telegram message: {e2}", exc_info=True)
+                        self.logger.error("tg_send_failure", instance=self.instance_id, error=str(e2), attempt=2)
+                        return None
+                # Non-parse error BadRequest: log and return failure
+                self.logger.error(f"Failed to send Telegram message (BadRequest): {e}", exc_info=True)
+                self.logger.error("tg_send_failure", instance=self.instance_id, error=str(e), attempt=1)
+                return None
+            except Exception as e:
+                if "Timed out" in str(e):
+                    self.logger.error(f"TimedOut sending Telegram message: {e}")
+                else:
+                    self.logger.error(f"Failed to send Telegram message: {e}", exc_info=True)
+                self.logger.error("tg_send_failure", instance=self.instance_id, error=str(e), attempt=1)
+                return None
 
-        # Attempt 1: raw (or lightly processed) content
-        try:
-            message = await self.bot.send_message(**send_kwargs)
-            self.logger.debug("tg_send_success", instance=self.instance_id, message_id=message.message_id, topic=topic, attempt=1)
-            return message.message_id
-        except BadRequest as e:
-            if "Can't parse entities" in str(e):
-                # Fallback attempt with fully escaped markdown
-                send_kwargs['text'] = self._escape_for_retry(text)
-                try:
-                    message = await self.bot.send_message(**send_kwargs)
-                    self.logger.debug("tg_send_success", instance=self.instance_id, message_id=message.message_id, topic=topic, attempt=2, fallback="escaped")
-                    return message.message_id
-                except Exception as e2:
-                    self.logger.error(f"Failed fallback send Telegram message: {e2}", exc_info=True)
-                    self.logger.error("tg_send_failure", instance=self.instance_id, error=str(e2), attempt=2)
-                    return None
-            # Non-parse error BadRequest: log and return failure
-            self.logger.error(f"Failed to send Telegram message (BadRequest): {e}", exc_info=True)
-            self.logger.error("tg_send_failure", instance=self.instance_id, error=str(e), attempt=1)
-            return None
-        except Exception as e:
-            if "Timed out" in str(e):
-                self.logger.error(f"TimedOut sending Telegram message: {e}")
+        # Otherwise, split by UTF-8 byte length and send multiple messages
+        chunks = self._split_utf8_bytes(content, 4096)
+        last_message_id: int | None = None
+        for idx, chunk in enumerate(chunks, start=1):
+            send_kwargs['text'] = chunk
+            try:
+                message = await self.bot.send_message(**send_kwargs)
+                last_message_id = message.message_id
+                self.logger.debug("tg_send_chunk_success", instance=self.instance_id, message_id=message.message_id, topic=topic, chunk_index=idx, total_chunks=len(chunks))
+            except BadRequest as e:
+                if "Can't parse entities" in str(e):
+                    # Fallback: escape the chunk fully and retry
+                    send_kwargs['text'] = escape_markdown(chunk, version=MARKDOWN_VERSION)
+                    try:
+                        message = await self.bot.send_message(**send_kwargs)
+                        last_message_id = message.message_id
+                        self.logger.debug("tg_send_chunk_success", instance=self.instance_id, message_id=message.message_id, topic=topic, chunk_index=idx, total_chunks=len(chunks), fallback="escaped")
+                    except Exception as e2:
+                        self.logger.error(f"Failed fallback send chunk {idx}/{len(chunks)}: {e2}", exc_info=True)
+                        self.logger.error("tg_send_chunk_failure", instance=self.instance_id, error=str(e2), chunk_index=idx)
+                        continue
+                else:
+                    self.logger.error(f"Failed to send Telegram message chunk {idx}/{len(chunks)} (BadRequest): {e}", exc_info=True)
+                    self.logger.error("tg_send_chunk_failure", instance=self.instance_id, error=str(e), chunk_index=idx)
+                    continue
+            except Exception as e:
+                self.logger.error(f"Failed to send Telegram message chunk {idx}/{len(chunks)}: {e}", exc_info=True)
+                self.logger.error("tg_send_chunk_failure", instance=self.instance_id, error=str(e), chunk_index=idx)
+                continue
+        return last_message_id
+
+    def _split_utf8_bytes(self, s: str, limit: int) -> list[str]:
+        """Split string into chunks not exceeding `limit` UTF-8 bytes.
+
+        Preference: split on the last newline before the limit when possible.
+        Always preserves UTF-8 code point boundaries.
+        """
+        chunks: list[str] = []
+        start = 0
+        byte_count = 0
+        last_nl_index = -1
+        last_nl_byte_count = 0
+        for i, ch in enumerate(s):
+            b = len(ch.encode('utf-8'))
+            if byte_count + b > limit:
+                if last_nl_index >= start:
+                    # Split at last newline within the current window
+                    chunks.append(s[start:last_nl_index + 1])
+                    # bytes after the newline remain in the current window
+                    byte_count = byte_count - last_nl_byte_count
+                    start = last_nl_index + 1
+                    last_nl_index = -1
+                    last_nl_byte_count = 0
+                else:
+                    # No newline in the window; hard split at boundary
+                    chunks.append(s[start:i])
+                    start = i
+                    byte_count = 0
+                # Now account for current char into the fresh window
+                byte_count += b
+                if ch == '\n':
+                    last_nl_index = i
+                    last_nl_byte_count = byte_count
             else:
-                self.logger.error(f"Failed to send Telegram message: {e}", exc_info=True)
-            self.logger.error("tg_send_failure", instance=self.instance_id, error=str(e), attempt=1)
-            return None
+                byte_count += b
+                if ch == '\n':
+                    last_nl_index = i
+                    last_nl_byte_count = byte_count
+        if start < len(s):
+            chunks.append(s[start:])
+        return chunks
 
     async def edit_message(self, message_id: int, text: str) -> bool:
         """Edit an existing message; returns True if edited (or unchanged), else False.

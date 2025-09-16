@@ -36,6 +36,12 @@ meshtastic:
   # Channels to ignore (do not forward to Telegram)
   # ignored_channels: [1, 2]
 
+  commands:
+    ping: True # /ping command to get your hop count and node id back
+    help: True # /help command
+  
+  reply_directly: false # if true, /ping and /help replies go directly to the sender instead of the channel
+
   # Link template to a node info page; {node_id} is replaced with the numeric id
   node_info_link: "https://meshmap.net/{node_id}"
   # Alternative example:
