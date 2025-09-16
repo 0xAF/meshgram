@@ -445,3 +445,76 @@ class MeshtasticInterface:
                 self.logger.error("mt_telemetry_script_exception", instance=self.instance_id, error=str(e))
 
             await asyncio.sleep(interval)
+
+    async def request_nodeinfo(self, node_id: str) -> None:
+        """Best-effort request to retrieve metadata for a remote node.
+
+        Tries library APIs if available; falls back to a harmless admin action
+        that may elicit routing/admin replies. Fully defensive: no exception leakage.
+        """
+        # Do not proceed during shutdown
+        if self.is_closing:
+            return
+        try:
+            if not self.interface or not node_id:
+                return
+            # Preferred: explicitly request NODEINFO from the target node using NODEINFO_APP.
+            # Some firmware responds to an empty payload. Use destinationId string (e.g. "!abcd1234").
+            def _send_nodeinfo(iface, dest: str, want_ack: bool):
+                try:
+                    self.logger.info(f"Sending NODEINFO request to {dest} (wantAck={want_ack}) code 1")
+                    return iface.sendData(  # type: ignore[attr-defined]
+                        b"",
+                        dest,
+                        portNum=portnums_pb2.PortNum.NODEINFO_APP,  # type: ignore[arg-type]
+                        wantAck=want_ack,  # type: ignore[arg-type]
+                    )
+                except TypeError:
+                    # Older signatures: no keywords
+                    if want_ack:
+                        self.logger.info(f"Sending NODEINFO request to {dest} (wantAck={want_ack}) code 2")
+                        return iface.sendData(b"", dest, portnums_pb2.PortNum.NODEINFO_APP, True)  # type: ignore[attr-defined]
+                    self.logger.info(f"Sending NODEINFO request to {dest} (wantAck={want_ack}) code 3")
+                    return iface.sendData(b"", dest, portnums_pb2.PortNum.NODEINFO_APP)  # type: ignore[attr-defined]
+
+            # Direct to node (wantAck)
+            self.logger.info(f"Sending NODEINFO request to {node_id} (wantAck=True) code 4")
+            try:
+                await asyncio.to_thread(_send_nodeinfo, self.interface, node_id, True)
+            except BaseException as be:  # Catch SystemExit from library code
+                self.logger.warning(f"NODEINFO request thread failed for {node_id}: {be}")
+            # Direct to node (no-ack)
+            try:
+                await asyncio.sleep(0.25)
+                await asyncio.to_thread(_send_nodeinfo, self.interface, node_id, False)
+            except BaseException as be:
+                self.logger.debug(f"NODEINFO (no-ack) send failed for {node_id}: {be}")
+            # Broadcast prompt
+            try:
+                def _send_broadcast(iface):
+                    try:
+                        self.logger.info("Sending NODEINFO broadcast request code 5")
+                        return iface.sendData(b"", BROADCAST_ADDR, portNum=portnums_pb2.PortNum.NODEINFO_APP)  # type: ignore[attr-defined]
+                    except TypeError:
+                        self.logger.info("Sending NODEINFO broadcast request code 6")
+                        return iface.sendData(b"", BROADCAST_ADDR, portnums_pb2.PortNum.NODEINFO_APP)  # type: ignore[attr-defined]
+                await asyncio.sleep(0.5)
+                await asyncio.to_thread(_send_broadcast, self.interface)
+                self.logger.debug("NODEINFO broadcast prompt sent")
+            except BaseException as be:
+                self.logger.debug(f"NODEINFO broadcast send failed: {be}")
+            # Fallback: attempt a traceroute which can prompt admin traffic
+            try:
+                ln = getattr(self.interface, 'localNode', None)
+                traceroute = getattr(ln, 'traceroute', None)
+                if callable(traceroute):
+                    try:
+                        await asyncio.to_thread(traceroute, node_id)
+                    except BaseException as be:
+                        self.logger.warning(f"traceroute failed for {node_id}: {be}")
+                        return
+                    self.logger.info(f"Traceroute issued to prompt info for {node_id}")
+            except Exception:
+                pass
+        except BaseException as e:  # pragma: no cover - defensive
+            self.logger.warning(f"request_nodeinfo failed for {node_id}: {e}")

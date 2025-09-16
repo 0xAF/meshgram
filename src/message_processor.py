@@ -7,6 +7,7 @@ import signal
 from typing import TypedDict, Literal, Protocol, NotRequired, cast, Any, Dict
 import sqlite3
 from datetime import datetime, timezone, timedelta
+from urllib import request
 from telegram import Update, LinkPreviewOptions
 from telegram.constants import ParseMode
 from telegram.helpers import escape_markdown
@@ -170,6 +171,27 @@ class MessageProcessor:
                                     to_long_name = ln.strip()
                     except Exception:
                         pass
+
+                    # If sender/recipient names are unknown, request node info (once per node), skipping our own node
+                    try:
+                        local_id = getattr(self.meshtastic, 'my_node_id', '')
+                        if isinstance(from_id, str) and from_id and from_id != local_id:
+                            if not from_short_name or from_short_name.lower() == 'unknown':
+                                _req_key = f"_nodeinfo_req_{from_id}"
+                                if not getattr(self, _req_key, False):
+                                    setattr(self, _req_key, True)
+                                    self.logger.info("requesting_nodeinfo", node_id=from_id, request_key=_req_key)
+                                    _ = asyncio.create_task(self.meshtastic.request_nodeinfo(from_id))
+                        if isinstance(to_id, str) and to_id and to_id != local_id:
+                            if not to_short_name or to_short_name.lower() == 'unknown':
+                                _req_key = f"_nodeinfo_req_{to_id}"
+                                if not getattr(self, _req_key, False):
+                                    setattr(self, _req_key, True)
+                                    self.logger.info("requesting_nodeinfo", node_id=to_id, request_key=_req_key)
+                                    _ = asyncio.create_task(self.meshtastic.request_nodeinfo(to_id))
+                    except Exception:
+                        pass
+                    
                     self.logger.info(
                         "mt_packet_rx", portnum=message.get('decoded', {}).get('portnum'), raw_type=message.get('type'),
                         from_id=from_id, from_sn=from_short_name, from_ln=from_long_name,
@@ -236,22 +258,6 @@ class MessageProcessor:
         if getattr(self, "_already_closed", False):
             self.logger.info("MessageProcessor is already closed; skipping.")
             return
-        if self.is_closing:
-            # Another caller is already shutting down; wait for tasks to finish.
-            self.logger.info("MessageProcessor close already in progress; awaiting existing shutdown.")
-            # Give tasks a brief chance to finish gracefully.
-            await asyncio.sleep(0)
-            return
-        self.is_closing = True
-        self.logger.info("processor_stop_begin", instance=self.instance_id)
-
-        # Cancel any still-running tasks spawned by process_messages (defensive).
-        for t in self.processing_tasks:
-            try:
-                if not t.done():
-                    t.cancel()
-            except Exception:
-                pass
         if self.processing_tasks:
             await asyncio.gather(*self.processing_tasks, return_exceptions=True)
         self.processing_tasks.clear()
@@ -674,13 +680,22 @@ class MessageProcessor:
             if not nodes_dict:
                 await _reply("No nodes known yet.")
             else:
-                lines: list[str] = []
-                for idx, (node_id, info) in enumerate(nodes_dict.items(), start=1):
+                # Collect and sort by shortName (case-insensitive)
+                items: list[tuple[str, str, str]] = []
+                for node_id, info in nodes_dict.items():
                     if not isinstance(info, dict):
                         info = {}
                     sn = info.get('shortName') or 'unknown'
                     ln = info.get('longName') or 'unknown'
-                    lines.append(f"{idx}. `{node_id}` - {sn} - {ln}")
+                    items.append((str(node_id), str(sn), str(ln)))
+                items.sort(key=lambda t: t[1].lower())
+                # Build enumerated lines
+                lines: list[str] = []
+                for idx, (node_id, sn, ln) in enumerate(items, start=1):
+                    lines.append(
+                        f"{idx}. `{node_id}` - "
+                        f"{sn.decode('utf-8') if isinstance(sn, bytes) else sn} - "
+                        f"{ln.decode('utf-8') if isinstance(ln, bytes) else ln}")
                 content = "Known nodes:\n" + "\n".join(lines)
                 await self.telegram.send_message(content, topic="default")
             return
