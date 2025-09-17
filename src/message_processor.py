@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import signal
+from importlib import import_module
 from typing import TypedDict, Literal, Protocol, NotRequired, cast, Any, Dict
 import sqlite3
 from datetime import datetime, timezone, timedelta
-from urllib import request
-from telegram import Update, LinkPreviewOptions
+from telegram import Update
 from telegram.constants import ParseMode
 from telegram.helpers import escape_markdown
 from meshtastic_interface import MeshtasticInterface
@@ -56,8 +56,9 @@ class Reports(TypedDict):
     nodes: bool
 
 class MeshCommands(TypedDict):
-    help: bool
     ping: bool
+    help: bool
+    ai: bool
 
 # --- Main Processor ---
 
@@ -94,8 +95,17 @@ class MessageProcessor:
         self.mesh_commands: MeshCommands = {
             'ping': config.get('meshtastic.commands.ping', False),
             'help': config.get('meshtastic.commands.help', False),
+            'ai': config.get('meshtastic.commands.ai', False),
         }
         self.forwarding_enabled: bool = config.get('telegram.enable_message_forwarding', False)
+
+        # AI feature flags (aim / ait) + config
+        self.ai_enabled_mesh: bool = config.get('meshtastic.ai_enabled', config.get('meshtastic.ai_mesh_enabled', False))
+        self.ai_enabled_telegram: bool = config.get('telegram.ai_enabled', config.get('telegram.ai_telegram_enabled', False))
+        self.ai_base_url: str = config.get('ai.base_url', 'http://localhost:11434')
+        self.ai_default_model: str = config.get('ai.model', 'llama3')
+        self.ai_system_prompt: str = config.get('ai.system_prompt', 'You are a helpful assistant for a Meshtastic ↔ Telegram bridge.')
+        self._ollama_client: Any | None = None
 
         # Message persistence DB (direct sqlite3)
         self._msgdb: sqlite3.Connection | None = None
@@ -175,14 +185,14 @@ class MessageProcessor:
                     # If sender/recipient names are unknown, request node info (once per node), skipping our own node
                     try:
                         local_id = getattr(self.meshtastic, 'my_node_id', '')
-                        if isinstance(from_id, str) and from_id and from_id != local_id:
+                        if isinstance(from_id, str) and from_id and from_id != local_id and from_id.startswith('!'):
                             if not from_short_name or from_short_name.lower() == 'unknown':
                                 _req_key = f"_nodeinfo_req_{from_id}"
                                 if not getattr(self, _req_key, False):
                                     setattr(self, _req_key, True)
                                     self.logger.info("requesting_nodeinfo", node_id=from_id, request_key=_req_key)
                                     _ = asyncio.create_task(self.meshtastic.request_nodeinfo(from_id))
-                        if isinstance(to_id, str) and to_id and to_id != local_id:
+                        if isinstance(to_id, str) and to_id and to_id != local_id and to_id.startswith('!'):
                             if not to_short_name or to_short_name.lower() == 'unknown':
                                 _req_key = f"_nodeinfo_req_{to_id}"
                                 if not getattr(self, _req_key, False):
@@ -258,6 +268,22 @@ class MessageProcessor:
         if getattr(self, "_already_closed", False):
             self.logger.info("MessageProcessor is already closed; skipping.")
             return
+        if self.is_closing:
+            # Another caller is already shutting down; wait for tasks to finish.
+            self.logger.info("MessageProcessor close already in progress; awaiting existing shutdown.")
+            # Give tasks a brief chance to finish gracefully.
+            await asyncio.sleep(0)
+            return
+        self.is_closing = True
+        self.logger.info("processor_stop_begin", instance=self.instance_id)
+
+        # Cancel any still-running tasks spawned by process_messages (defensive).
+        for t in self.processing_tasks:
+            try:
+                if not t.done():
+                    t.cancel()
+            except Exception:
+                pass
         if self.processing_tasks:
             await asyncio.gather(*self.processing_tasks, return_exceptions=True)
         self.processing_tasks.clear()
@@ -271,11 +297,67 @@ class MessageProcessor:
         self._already_closed = True  # type: ignore[attr-defined]
         self.logger.info("processor_stop_complete", instance=self.instance_id)
 
-    # --- Meshtastic Message Handlers ---
+    # --- AI Helpers ---
+    async def _get_ollama(self):
+        if self._ollama_client is None:
+            try:
+                mod = import_module('ollama_client')
+                OllamaClient = getattr(mod, 'OllamaClient')
+                self._ollama_client = OllamaClient(base_url=self.ai_base_url, model=self.ai_default_model)
+            except Exception as e:
+                self.logger.error(f"Failed to init Ollama client: {e}")
+                return None
+        return self._ollama_client
 
-    async def handle_meshtastic_message(self, packet: dict[str, object]) -> None:  # type: ignore[override]
-        """Handle a non-ACK Meshtastic packet by resolving an app-specific handler."""
-        if packet.get('type') == 'ack':  # type: ignore[attr-defined]
+    async def _ollama_chat(self, prompt: str, conversation_id: str | None = None) -> str:
+        client = await self._get_ollama()
+        if not client:
+            return "[AI unavailable]"
+        return await client.chat(prompt, system=self.ai_system_prompt, keep_history=True, conversation_id=conversation_id or 'global')
+
+    def _split_mesh(self, text: str) -> list[str]:
+        """Split text into chunks of at most 200 UTF-8 bytes.
+
+        - Counts bytes (not characters) so multi-byte code points don't overflow.
+        - Prefers splitting on newline or space when available in the current window.
+        - Never splits inside a UTF-8 code point (iterates by Python characters).
+        """
+        limit = 200
+        # Fast path based on UTF-8 bytes
+        if len(text.encode('utf-8')) <= limit:
+            return [text]
+
+        chunks: list[str] = []
+        start = 0
+        byte_count = 0
+        last_break_index = -1
+
+        for i, ch in enumerate(text):
+            ch_bytes = len(ch.encode('utf-8'))
+            if ch in {'\n', ' ', '.', ',', '!', '?', ';', ':', '\t'}:
+                last_break_index = i
+
+            if byte_count + ch_bytes > limit:
+                if last_break_index >= start:
+                    # Split at the last break position within window
+                    chunks.append(text[start:last_break_index + 1].rstrip())
+                    start = last_break_index + 1
+                else:
+                    # No natural break; split at current char boundary
+                    chunks.append(text[start:i])
+                    start = i
+                byte_count = 0
+                last_break_index = -1
+
+            byte_count += ch_bytes
+
+        if start < len(text):
+            chunks.append(text[start:])
+        return chunks
+
+    # --- Meshtastic Message Handlers ---
+    async def handle_meshtastic_message(self, packet: dict[str, object]) -> None:
+        if packet.get('type') == 'ack':
             await self.handle_ack(packet)
             return
 
@@ -315,7 +397,11 @@ class MessageProcessor:
             return
 
         try:
-            message_id_int = int(message_id)  # type: ignore[arg-type]
+            # Defensive cast: library may supply str/int; treat others as invalid
+            if isinstance(message_id, (str, int)):
+                message_id_int = int(message_id)
+            else:
+                raise ValueError("unsupported message_id type")
         except Exception:
             self.logger.warning(f"ACK message id not convertible to int: {message_id}")
             return
@@ -340,6 +426,7 @@ class MessageProcessor:
         decoded = cast(dict, packet.get('decoded', {}))
         payload = decoded.get('payload', b'')
         text: str = payload.decode('utf-8') if isinstance(payload, (bytes, bytearray)) else str(payload)
+        request = text
         # Normalize channel number to int for type safety
         raw_channel = packet.get('channel', 0)
         try:
@@ -393,48 +480,68 @@ class MessageProcessor:
             snr_val = float(str(snr)) if snr != 'n/a' else None  # type: ignore[arg-type]
             if rssi_val is not None and snr_val is not None:
                 if rssi_val > -80 and snr_val > 8:
-                    signal_emoji = "😃"
-                    signal_label = "Excellent"
+                    signal_emoji = "😃"; signal_label = "Excellent"
                 elif rssi_val > -90 and snr_val > 2:
-                    signal_emoji = "🙂"
-                    signal_label = "Good"
+                    signal_emoji = "🙂"; signal_label = "Good"
                 elif rssi_val > -100 and snr_val > -5:
-                    signal_emoji = "😐"
-                    signal_label = "Fair"
+                    signal_emoji = "😐"; signal_label = "Fair"
                 else:
-                    signal_emoji = "😣"
-                    signal_label = "Bad"
+                    signal_emoji = "😣"; signal_label = "Bad"
             elif rssi_val is not None:
                 if rssi_val > -80:
-                    signal_emoji = "😃"
-                    signal_label = "Excellent"
+                    signal_emoji = "😃"; signal_label = "Excellent"
                 elif rssi_val > -90:
-                    signal_emoji = "🙂"
-                    signal_label = "Good"
+                    signal_emoji = "🙂"; signal_label = "Good"
                 elif rssi_val > -100:
-                    signal_emoji = "😐"
-                    signal_label = "Fair"
+                    signal_emoji = "😐"; signal_label = "Fair"
                 else:
-                    signal_emoji = "😣"
-                    signal_label = "Bad"
+                    signal_emoji = "😣"; signal_label = "Bad"
             elif snr_val is not None:
                 if snr_val > 8:
-                    signal_emoji = "😃"
-                    signal_label = "Excellent"
+                    signal_emoji = "😃"; signal_label = "Excellent"
                 elif snr_val > 2:
-                    signal_emoji = "🙂"
-                    signal_label = "Good"
+                    signal_emoji = "🙂"; signal_label = "Good"
                 elif snr_val > -5:
-                    signal_emoji = "😐"
-                    signal_label = "Fair"
+                    signal_emoji = "😐"; signal_label = "Fair"
                 else:
-                    signal_emoji = "😣"
-                    signal_label = "Bad"
+                    signal_emoji = "😣"; signal_label = "Bad"
         except Exception:
             pass
 
-        is_command = None
-        # Slash-command dispatch: parse "/command" and delegate to handler if present
+        # Normalize AI triggers: if text starts with ai/bot/ии/аи/бот (with or without colon), replace with "/ai "
+        ai_triggers = ["ai", "bot", "аи", "ии", "бот"]
+        for trigger in ai_triggers:
+            for sep in ("", ":", ","):
+                prefix = f"{trigger}{sep}"
+                if isinstance(text, str) and text.lower().startswith(prefix):
+                    # Replace only at the start
+                    text = "/ai " + text[len(prefix):].lstrip()
+                    break
+            else:
+                continue
+            break
+
+        # Detect "flight", "plane", airplane emoji, or similar words and prepend "/ai " if found
+        travel_keywords = [
+            "flight", "plane", "airplane", "flying", "airport", "boarding", "takeoff", "landing",
+            "in the air", "plane", "travel", "cruise", "jet", "aircraft", "aviation", "boat", "ship", "sail",
+            # Air travel emojis
+            "🚀", "🛩️", "🛫", "🛬", "✈️", "🛩",
+            # Sea travel emojis
+            "🛥️", "🚢", "⛴️", "⛵", "🛶", "🚤", "🛳️",
+            # Land travel emojis
+            "🚗", "🚙", "🚕", "🚓", "🚚", "🚛", "🚜", "🏍️", "🛵", "🚲", "🚌", "🚎", "🚐", "🚒", "🚑", "🚃", "🚄", "🚅", "🚆", "🚇", "🚈", "🚉", "🚊", "🚝", "🚞", "🚋", "🚍", "🚔", "🚖", "🚘", "🚍",
+            # Mountain and adventure travel emojis
+            "🏔️", "⛰️", "🏕️", "🏞️", "🎒", "🧗", "🧗‍♂️", "🧗‍♀️", "🚵", "🚵‍♂️", "🚵‍♀️", "🏂", "⛷️", "🏄", "🏄‍♂️", "🏄‍♀️", "🏊", "🏊‍♂️", "🏊‍♀️",
+            # General travel/holiday emojis
+            "🌍", "🌎", "🌏", "🗺️", "🧳", "🏨", "🏩", "🏬", "🏯", "🏰", "🗽", "🗼", "🕌", "⛩️", "🕍", "🛎️", "🏝️", "🏖️", "🏜️", "🏟️", "🎢", "🎡", "🎠",
+        ]
+        text_lower = text.lower() if isinstance(text, str) else ""
+        if any(word in text_lower for word in travel_keywords):
+            if not text_lower.startswith("/travel "):
+                text = "/travel " + text
+        
+        is_command: str | None = None
         if isinstance(text, str) and text.startswith('/'):
             parts = text.split()
             cmd = parts[0][1:].partition('@')[0].lower()
@@ -488,7 +595,9 @@ class MessageProcessor:
                 long_name_val = from_long if isinstance(from_long, str) else ""
                 self._msgdb.execute(
                     f"INSERT INTO {table} (timestamp, from_id, name, long_name, message) VALUES (?, ?, ?, ?, ?)",
-                    (ts, sender, name_val, long_name_val, text),
+                    (ts, sender, name_val, long_name_val, 
+                        ( text if not is_command else f"[CMD:{request}]: {text}" )  # type: ignore[operator]
+                    ),
                 )
                 self._msgdb.commit()
         except Exception as e:
@@ -505,9 +614,13 @@ class MessageProcessor:
                 pass
 
         if is_command:
-            message = f"💻 <b>{channel_label} CMD: {is_command} `{sender}` - `{from_short}` - `{from_long}`</b>\n<u>[REPLY]</u>: {text}\n"
+            message = (
+                f"💻 <b>{channel_label} CMD: {is_command} `{sender}` - `{from_short}` - `{from_long}`</b>\n"
+                f"<u>[REQ]</u>: {request}\n"
+                f"<u>[RPL]</u>: {text}\n"
+            )
         else:
-            message = f"💬 <b>{channel_label} `{sender}` - `{from_long}`\n<u>`{from_short}`</u>: </b>{text}\n\n"
+            message = f"💬 <b>{channel_label} `{sender}` - `{from_long}`</b>\n<u>`{from_short}`</u>: {text}\n\n"
 
         message += f"↔️ HAway: {hops_away}, HLimit: {hops_limit}"
         if snr and snr != 'n/a':
@@ -538,9 +651,9 @@ class MessageProcessor:
         """
         safe = re.sub(r"[^A-Za-z0-9]+", "_", name).strip("_")
         if not safe:
-            safe = "T"
+            safe = 'T'
         if safe[0].isdigit():
-            safe = f"T_{safe}"
+            safe = 'T_' + safe
         return safe.upper()
 
     def _ensure_table_and_index(self, table: str) -> None:
@@ -558,6 +671,41 @@ class MessageProcessor:
 
     async def handle_telegram_message(self, message: TelegramMessage) -> None:
         """Dispatch a normalized Telegram message to its concrete handler."""
+        # Inline AI trigger for plain Telegram text: if message starts with
+        # bot/ai/бот/аи/ии (optionally followed by ':' or ',') treat as /ai.
+        if message.get('type') == 'telegram':
+            raw_text = str(message.get('text') or '')
+            text_l = raw_text.lstrip()
+            ai_triggers = ["ai", "bot", "аи", "ии", "бот"]
+            matched = False
+            for trig in ai_triggers:
+                for sep in ("", ":", ","):
+                    prefix = f"{trig}{sep}"
+                    if text_l.lower().startswith(prefix):
+                        prompt = text_l[len(prefix):].lstrip()
+                        matched = True
+                        break
+                if matched:
+                    break
+            if matched:
+                thread_id = message.get('thread_id')
+                user_id = message.get('user_id')
+                if not self.ai_enabled_telegram:
+                    await self.telegram.send_message("AI feature (ait) is disabled", topic=str(thread_id) if thread_id is not None else "default")
+                    return
+                if not prompt:
+                    await self.telegram.send_message("Usage: /ai <prompt>", topic=str(thread_id) if thread_id is not None else "default")
+                    return
+                conv_id = str(user_id) if user_id is not None else 'global'
+                reply = await self._ollama_chat(prompt, conversation_id=conv_id)
+                # Reply to the triggering message if we have its id
+                reply_to = message.get('message_id') if isinstance(message.get('message_id'), int) else None
+                await self.telegram.send_message(
+                    reply[:3500],
+                    topic=str(thread_id) if thread_id is not None else "default",
+                    reply_to_message_id=reply_to
+                )
+                return
         handlers = {
             'command': self.handle_telegram_command,
             'telegram': self.handle_telegram_text,
@@ -642,6 +790,8 @@ class MessageProcessor:
             for k, v in self.reports.items():
                 features.append(f"{k}={'on' if v else 'off'}")
             features.append(f"forwarding={'on' if self.forwarding_enabled else 'off'}")
+            features.append(f"aim={'on' if self.ai_enabled_mesh else 'off'}")
+            features.append(f"ait={'on' if self.ai_enabled_telegram else 'off'}")
             features_str = ", ".join(features)
             await _reply(
                 f"Status:\nUptime: {uptime_delta}\nNodes: {node_count}\nReports: {features_str}"
@@ -650,22 +800,51 @@ class MessageProcessor:
         if command == 'features':
             features_lines = [f"• {k}: {'enabled' if v else 'disabled'}" for k, v in self.reports.items()]
             features_lines.append(f"• forwarding: {'enabled' if self.forwarding_enabled else 'disabled'}")
+            features_lines.append(f"• aim (mesh ai): {'enabled' if self.ai_enabled_mesh else 'disabled'}")
+            features_lines.append(f"• ait (telegram ai): {'enabled' if self.ai_enabled_telegram else 'disabled'}")
             await _reply("Features:\n" + "\n".join(features_lines))
             return
         if command in ('enable', 'disable') and args:
             target = args[0].lower()
+            new_val = (command == 'enable')
             if target in self.reports:
-                new_val = (command == 'enable')
                 self.reports[target] = new_val  # type: ignore[index]
                 self.logger.info("tg_cmd_feature_toggle", instance=self.instance_id, feature=target, value=new_val)
                 await _reply(f"Feature {target} set to {'enabled' if new_val else 'disabled'}")
             elif target in ('forwarding', 'message_forwarding', 'forward'):
-                new_val = (command == 'enable')
                 self.forwarding_enabled = new_val
                 self.logger.info("tg_cmd_forwarding_toggle", instance=self.instance_id, value=new_val)
                 await _reply(f"Forwarding set to {'enabled' if new_val else 'disabled'}")
+            elif target in ('aim', 'ai_mesh', 'ait', 'ai_telegram'):
+                if target in ('aim', 'ai_mesh'):
+                    self.ai_enabled_mesh = new_val
+                    await _reply(f"Mesh AI (aim) set to {'enabled' if new_val else 'disabled'}")
+                else:
+                    self.ai_enabled_telegram = new_val
+                    await _reply(f"Telegram AI (ait) set to {'enabled' if new_val else 'disabled'}")
             else:
                 await _reply(f"Unknown feature: {target}")
+            return
+        if command == 'ai':
+            if not self.ai_enabled_telegram:
+                await _reply("AI feature (ait) is disabled")
+                return
+            if not args:
+                await _reply("Usage: /ai <prompt>")
+                return
+            prompt = " ".join(args)
+            conv_id = str(user_id) if user_id is not None else 'global'
+            response = await self._ollama_chat(prompt, conversation_id=conv_id)
+            await _reply(response[:3500])
+            return
+        if command == 'aireset':
+            client = await self._get_ollama()
+            if client:
+                conv_id = str(user_id) if user_id is not None else 'global'
+                client.reset(conv_id)
+                await _reply("AI context reset for this conversation.")
+            else:
+                await _reply("AI not initialized")
             return
         if command == 'node':
             if not args:
@@ -832,27 +1011,26 @@ class MessageProcessor:
         """Handle '/help' issued from the mesh text app and return the reply text."""
         if not self.mesh_commands.get('help', False):
             return f"{from_short} → help not enabled"
-
-        enabled_cmds = [name for name, on in self.mesh_commands.items() if on]
-        # Always show ping in help (if disabled, mark it accordingly)
-        cmds_line = "/ping" + (" (disabled)" if not self.mesh_commands.get('ping', False) else "")
-        help_text = (
-            "Mesh commands:\n"
-            f"• {cmds_line}\n"
-            "Use '/ping' to get link stats (hops, RSSI, SNR)."
-        )
-        self.logger.info(
-            "help_command_rx",
-            instance=self.instance_id,
-            bridge_id=bridge_id,
-            sender=sender,
-            recipient=recipient,
-            from_short=from_short,
-            to_short=to_short,
-            channel=channel_num,
-        )
-        sent_to = sender
-        if recipient == "^all": # channel message
+        cmds_ping = "/ping" + (" (disabled)" if not self.mesh_commands.get('ping', False) else "")
+        ai_enabled = self.mesh_commands.get('ai', False) and self.ai_enabled_mesh
+        cmds_ai = "/ai" + (" (disabled)" if not ai_enabled else "")
+        cmds_aireset = "/aireset" + (" (disabled)" if not ai_enabled else "")
+        cmds_travel = "/travel" + (" (disabled)" if not self.config.get('meshtastic.commands.travel', True) else "")
+        lines = [
+            "Mesh commands:",
+            f"• {cmds_ping}",
+            f"• {cmds_travel}",
+            f"• {cmds_ai}",
+            f"• {cmds_aireset}",
+            "Use '/ping' for link stats.",
+            "Use '/travel' for a short safety reminder.",
+            "Use '/ai <prompt>' to chat with the AI model (if enabled).",
+            "Use '/aireset' to reset your AI context (if enabled)."
+        ]
+        help_text = "\n".join(lines)
+        self.logger.info("help_command_rx", instance=self.instance_id, bridge_id=bridge_id, sender=sender, recipient=recipient, from_short=from_short, to_short=to_short, channel=channel_num)
+        send_to = sender
+        if recipient == "^all":
             send_to = "^all"
         else:
             channel_num = 0  # direct message
@@ -878,7 +1056,109 @@ class MessageProcessor:
             self.logger.error(f"Failed to send help reply: {e}", exc_info=True)
         return help_text
 
-    
+    async def handle_mesh_cmd_ai(self, *, sender: str, recipient: str, channel_num: int, hops_start: int, hops_limit: int, hops_away: int, mqtt: bool, rssi: Any, snr: Any, bridge_id: int, args: list[str], from_short: str, to_short: str, signal_emoji: str, signal_label: str, reply_directly: bool = False) -> str:
+        if not self.mesh_commands.get('ai', False):
+            return f"{from_short} → ai command not enabled"
+        if not self.ai_enabled_mesh:
+            return f"{from_short} → mesh AI disabled (aim)"
+        if not args:
+            return f"{from_short} → usage: /ai <prompt>"
+        prompt = " ".join(args)
+        node = self.node_manager.nodes.get(sender) if hasattr(self.node_manager, 'nodes') else None
+        conv_id = None
+        try:
+            if node:
+                sn = node.get('shortName')
+                if isinstance(sn, str) and sn.strip():
+                    conv_id = sn.strip()
+        except Exception:
+            pass
+        if not conv_id:
+            conv_id = sender
+        reply_full = await self._ollama_chat(prompt, conv_id)
+        chunks = self._split_mesh(reply_full)
+        send_to = sender
+        if recipient == "^all":
+            send_to = "^all"
+        else:
+            channel_num = 0
+        # if reply_directly:
+            # send_to = sender
+            # channel_num = 0
+        for c in chunks:
+            try:
+                _ = await self.meshtastic.send_message(c, send_to, channel=channel_num)
+            except Exception:
+                break
+        # Provide first line as the text to show in Telegram log
+        return f"{from_short} → {' '.join(chunks)}"
+
+    async def handle_mesh_cmd_aireset(self, *, sender: str, recipient: str, channel_num: int, hops_start: int, hops_limit: int, hops_away: int, mqtt: bool, rssi: Any, snr: Any, bridge_id: int, args: list[str], from_short: str, to_short: str, signal_emoji: str, signal_label: str, reply_directly: bool = False) -> str:
+        """Reset AI conversation history for this mesh node."""
+        if not self.mesh_commands.get('ai', False):
+            return f"{from_short} → ai command not enabled"
+        if not self.ai_enabled_mesh:
+            return f"{from_short} → mesh AI disabled (aim)"
+        client = await self._get_ollama()
+        if not client:
+            return f"{from_short} → AI unavailable"
+        node = self.node_manager.nodes.get(sender) if hasattr(self.node_manager, 'nodes') else None
+        conv_id = None
+        try:
+            if node:
+                sn = node.get('shortName')
+                if isinstance(sn, str) and sn.strip():
+                    conv_id = sn.strip()
+        except Exception:
+            pass
+        if not conv_id:
+            conv_id = sender
+        client.reset(conv_id)
+        reply_text = f"{from_short} → AI context reset"
+        send_to = sender
+        if recipient == "^all":
+            send_to = "^all"
+        else:
+            channel_num = 0
+        if reply_directly:
+            send_to = sender; channel_num = 0
+        try:
+            meshtastic_message_id = await self.meshtastic.send_message(reply_text, send_to, channel=channel_num)
+            self.pending_acks[meshtastic_message_id] = {
+                'telegram_message_id': 0,
+                'telegram_thread_id': 0,
+                'timestamp': datetime.now(timezone.utc)
+            }
+        except Exception:
+            pass
+        return reply_text
+
+    async def handle_mesh_cmd_travel(self, *, sender: str, recipient: str, channel_num: int, hops_start: int, hops_limit: int, hops_away: int, mqtt: bool, rssi: Any, snr: Any, bridge_id: int, args: list[str], from_short: str, to_short: str, signal_emoji: str, signal_label: str, reply_directly: bool = False) -> str:
+        """Reply to '/travel' with a fixed safety message."""
+        if not self.config.get('meshtastic.commands.travel', True):
+            return f"{from_short} → travel not enabled"
+        reply_text = "This is Varna, Bulgaria. Be safe."
+        self.logger.info("travel_command_rx", instance=self.instance_id, bridge_id=bridge_id, sender=sender, recipient=recipient, from_short=from_short, to_short=to_short, channel=channel_num)
+        send_to = sender
+        if recipient == "^all":
+            send_to = "^all"
+        else:
+            channel_num = 0  # direct message
+        # if reply_directly:
+        #     send_to = sender
+        #     channel_num = 0
+        try:
+            meshtastic_message_id = await self.meshtastic.send_message(reply_text, send_to, channel=channel_num)
+            self.pending_acks[meshtastic_message_id] = {
+                'telegram_message_id': 0,
+                'telegram_thread_id': 0,
+                'timestamp': datetime.now(timezone.utc)
+            }
+            self.logger.info("travel_command_reply_sent", instance=self.instance_id, bridge_id=bridge_id, meshtastic_message_id=meshtastic_message_id, from_short=from_short, to_short=to_short)
+        except Exception as e:
+            self.logger.error(f"Failed to send travel reply: {e}", exc_info=True)
+        return reply_text
+
     async def handle_traceroute_app(self, _packet: Dict[str, Any]) -> None:
         self.logger.info("[Meshtastic] Traceroute app packet received (ignored)")
         return

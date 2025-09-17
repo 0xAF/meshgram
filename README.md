@@ -14,6 +14,7 @@ Connect your Meshtastic mesh network with Telegram group chats! 📡💬
 - 📝 Optional logging to file and syslog
 - Cache learned nodes to cache.db (sqlite)
 - Respond to /ping command from mestastic node
+- Optional local AI chat via Ollama (/ai on mesh & Telegram)
 
 ## 🛠 Requirements
 
@@ -128,11 +129,33 @@ On Linux using a serial device, ensure your user can access the port (e.g. /dev/
 - `/disable <feature>` - Disable a feature
 - `/features` - Show features status
 - `/listnodes` - List known nodes
+- `/ai <prompt>` - Ask the local AI model (if enabled)
+- `/aireset` - Reset your AI conversation context (Telegram user)
+
+## 🛰️ Mesh Commands
+
+Mesh-side slash commands are sent as normal text messages beginning with `/` from a Meshtastic node (Text Message App). The bridge intercepts and (optionally) replies directly back to the sender or the channel depending on configuration.
+
+Enabled via `meshtastic.commands.*` and AI feature flag `aim`:
+
+- `/ping` – Returns hop metrics (HopsAway, HStart, HLimit) plus RSSI/SNR and signal quality emoji.
+- `/help` – Lists the mesh commands currently available (respects enabled/disabled status).
+- `/travel` – Sends a short safety reminder (toggle via `meshtastic.commands.travel`).
+- `/ai <prompt>` – Chat with the local AI model (requires both `meshtastic.commands.ai: true` and `meshtastic.ai_enabled: true`). History is per node shortName (fallback node id).
+- `/aireset` – Reset this node's AI conversation context (same enablement requirements as `/ai`).
+
+Notes:
+
+1. Set `meshtastic.commands.ping: true`, `meshtastic.commands.help: true`, `meshtastic.commands.ai: true`, `meshtastic.commands.travel: true` as needed.
+2. Turn mesh AI on/off at runtime with `/enable aim` or `/disable aim` from Telegram (admin/authorized user).
+3. If `meshtastic.reply_directly` is true in config, command replies are sent as a direct message instead of channel broadcast.
+4. Ignored channels (`meshtastic.ignored_channels`) suppress command execution and forwarding.
 
 Feature toggles you can control at runtime:
 
 - `forwarding` — bridge Telegram → Meshtastic messages on/off
 - Reporting features: `telemetry`, `location`, `nodes`
+- AI features: `ait` (Telegram AI), `aim` (mesh /ai command)
   - Example: `/enable forwarding`, `/disable telemetry`
 
 ## 🤝 Contributing
@@ -205,3 +228,34 @@ pytest -q
 - Caching: learned nodes are persisted to `cache.db` (sqlite) for faster startup.
 
 Happy meshing! 🎉
+
+## 🤖 AI (Ollama) Integration
+
+Meshgram can connect to a local [Ollama](https://ollama.com) server to provide AI chat responses:
+
+1. Install and run Ollama locally (ensure the model is pulled, e.g. `ollama pull llama3`).
+2. Enable features:
+   - In config: set `telegram.ai_enabled: true` (feature key `ait`) to allow `/ai` in Telegram.
+   - Set `meshtastic.ai_enabled: true` (feature key `aim`) plus `meshtastic.commands.ai: true` for mesh `/ai`.
+3. Configure AI section:
+
+```yaml
+ai:
+  base_url: "http://127.0.0.1:11434"
+  model: "gemma3"
+  system_prompt: |
+    You are a helpful assistant running on Meshtastic <-> Telegram bridge. Keep answers concise.
+    You speak only in Bulgarian, unless the user specifically asks you to respond in English.
+    If the user asks you to translate something, you can do so, but only if it is a short phrase or sentence. Do not translate long texts or documents.
+    If the user asks you to write code, you can do so, but only if it is a short snippet. Do not write long programs or scripts.
+    If the user asks you to generate text, you can do so, but only if it is a short paragraph or two. Do not generate long articles or essays.
+    Always be funny and picky.
+    Always answer short and concise.
+```
+
+Per-user / per-node context & resets:
+
+- Telegram: conversation history is keyed by the Telegram user id. Use `/aireset` to clear your own history.
+- Mesh: history is keyed by the sender shortName (fallback raw node id). Use `/aireset` on the mesh (if `meshtastic.commands.ai` and `aim` enabled) to reset that node's context.
+
+Restarting the service clears all histories globally.

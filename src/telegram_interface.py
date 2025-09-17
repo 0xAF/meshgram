@@ -61,6 +61,8 @@ class TelegramInterface:
             'disable':  {'description': 'Disable a feature', 'handler': self.handle_command},
             'features': {'description': 'List features', 'handler': self.handle_command},
             'listnodes':{'description': 'List all known nodes', 'handler': self.handle_command},
+            'ai':       {'description': 'Chat with the AI: /ai <prompt>', 'handler': self.handle_command},
+            'aireset':  {'description': 'Reset your AI conversation context', 'handler': self.handle_command},
         }
 
     async def setup(self) -> None:
@@ -287,7 +289,7 @@ class TelegramInterface:
             if message_id:
                 self.last_messages[message_key] = message_id
 
-    async def send_message(self, text: str, disable_notification: bool = False, topic="default", force_escape: bool | None = None) -> int | None:
+    async def send_message(self, text: str, disable_notification: bool = False, topic="default", force_escape: bool | None = None, reply_to_message_id: int | None = None) -> int | None:
         """Send a Telegram message and return its id.
 
         Restores legacy behavior (raw Markdown V2 formatting) by default so that
@@ -316,6 +318,8 @@ class TelegramInterface:
         }
         if t != 1:
             send_kwargs['message_thread_id'] = t
+        if reply_to_message_id is not None:
+            send_kwargs['reply_to_message_id'] = reply_to_message_id
         # If content fits in one Telegram message (4096 bytes of UTF-8), send directly with fallback
         if len(content.encode('utf-8')) <= 4096:
             try:
@@ -522,7 +526,7 @@ class TelegramInterface:
         user_id = update.effective_user.id
 
         if not self.is_user_authorized(user_id) and command not in [
-            'start', 'help', 'user', 'node', 'status', 'features'
+            'start', 'help', 'user', 'node', 'status', 'features', 'ai', 'aireset'
         ]:
             await update.message.reply_text(
                 escape_markdown("You are not authorized to use this command.", version=2),

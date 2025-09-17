@@ -3,3 +3,4 @@ meshtastic
 pip
 python-telegram-bot
 sqlitedict
+httpx

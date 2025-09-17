@@ -17,7 +17,9 @@ telegram:
   # Use Telegram Topics/Threads; map mesh channels to topic IDs under 'topics' below
   use_topics: false
   # Preserve incoming Markdown V2 formatting by default (set to false to always auto-escape)
-  raw_markdown: true
+  raw_markdown: false
+  # Enable AI (Ollama) responses via Telegram command /ai
+  ai_enabled: false  # renamed feature key 'ait'
 
 meshtastic:
   # How to connect to your Meshtastic node: 'serial' or 'tcp'
@@ -39,8 +41,12 @@ meshtastic:
   commands:
     ping: True # /ping command to get your hop count and node id back
     help: True # /help command
+    ai: False  # enable /ai mesh command (feature key 'aim')
+    travel: True  # enable /travel safety reminder command
   
   reply_directly: false # if true, /ping and /help replies go directly to the sender instead of the channel
+  # Feature flag for AI replies originating from the mesh (/ai)
+  ai_enabled: false  # feature key 'aim'
 
   # Link template to a node info page; {node_id} is replaced with the numeric id
   node_info_link: "https://meshmap.net/{node_id}"
@@ -87,4 +93,20 @@ logging:
   syslog_host: "127.0.0.1"
   syslog_port: 514
   syslog_protocol: "udp"  # udp or tcp
+
+# AI configuration (local Ollama model)
+ai:
+  # Base URL of the local Ollama server
+  base_url: "http://127.0.0.1:11434"
+  # Default model name to use
+  model: "llama3"
+  # Optional system prompt to steer behavior
+  system_prompt: |
+    You are a helpful assistant running on Meshtastic <-> Telegram bridge. Keep answers concise.
+    You speak only in Bulgarian, unless the user specifically asks you to respond in English.
+    If the user asks you to translate something, you can do so, but only if it is a short phrase or sentence. Do not translate long texts or documents.
+    If the user asks you to write code, you can do so, but only if it is a short snippet. Do not write long programs or scripts.
+    If the user asks you to generate text, you can do so, but only if it is a short paragraph or two. Do not generate long articles or essays.
+    Always be funny and picky.
+    Always answer short and concise.
 

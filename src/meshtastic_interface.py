@@ -208,13 +208,16 @@ class MeshtasticInterface:
     async def send_message(self, text: str, recipient: str, channel: int | None = None) -> int:
         """Send a text message; queues for retry on failure.
 
-        Returns the meshtastic message id, or -1 on failure (and schedules retry).
+        Splits into multiple 200-byte UTF-8 chunks (preferring newline breaks)
+        and sends each sequentially.
+
+        Returns the first chunk's meshtastic message id if at least one chunk
+        succeeds; otherwise -1 (and schedules retry of the full message).
         """
         if not text or not recipient:
             raise ValueError("Text and recipient must not be empty")
-        if len(text) > MESSAGE_MAX_LEN:
-            raise ValueError("Message too long")
-        self.logger.info("mt_send_attempt", instance=self.instance_id, recipient=recipient, channel=channel, size=len(text))
+        # Log based on bytes for accuracy
+        self.logger.info("mt_send_attempt", instance=self.instance_id, recipient=recipient, channel=channel, size=len(text.encode('utf-8')))
         try:
             explicit_channel = channel is not None
             if channel is None:
@@ -224,18 +227,103 @@ class MeshtasticInterface:
                     channel = 0
             self.logger.debug(f"Sending message to Meshtastic {channel=} with {recipient=}")
             iface = self._require_interface()
-            if explicit_channel:
-                result = await asyncio.to_thread(iface.sendText, text, destinationId=recipient, channelIndex=int(channel))  # type: ignore[attr-defined]
-            else:
-                result = await asyncio.to_thread(iface.sendText, text, destinationId=recipient)  # type: ignore[attr-defined]
-            self.logger.info("mt_send_success", instance=self.instance_id, recipient=recipient, channel=channel, message_id=getattr(result, 'id', None))
-            self.logger.debug(f"{result=}")
-            return result.id  # Return the message ID for tracking
+
+            # Split into UTF-8 byte chunks using MESSAGE_MAX_LEN while reserving
+            # room for the trailing "\nMSG i of N" suffix per chunk.
+            chunks = self._split_utf8_bytes_reserve_suffix(text, MESSAGE_MAX_LEN)
+            first_id: int | None = None
+            for idx, chunk in enumerate(chunks, start=1):
+                if explicit_channel:
+                    result = await asyncio.to_thread(iface.sendText, chunk, destinationId=recipient, channelIndex=int(channel))  # type: ignore[attr-defined]
+                else:
+                    result = await asyncio.to_thread(iface.sendText, chunk, destinationId=recipient)  # type: ignore[attr-defined]
+                if first_id is None:
+                    first_id = getattr(result, 'id', None)
+                self.logger.info("mt_send_success", instance=self.instance_id, recipient=recipient, channel=channel, message_id=getattr(result, 'id', None))
+                self.logger.debug("mt_send_chunk", instance=self.instance_id, chunk_index=idx, total_chunks=len(chunks), bytes=len(chunk.encode('utf-8')))
+            return first_id if isinstance(first_id, int) else -1
         except Exception as e:
             self.logger.error(f"Error sending message to Meshtastic: {e=}", exc_info=True)
             self.logger.error("mt_send_failure", instance=self.instance_id, recipient=recipient, channel=channel, error=str(e))
-            self.pending_messages.append(PendingMessage(text, recipient))
+            if "Data payload too big" in str(e):
+                self.logger.error("mt_send_too_big", instance=self.instance_id, recipient=recipient, channel=channel)
+            else:
+                self.pending_messages.append(PendingMessage(text, recipient))
             return -1  # Indicate failure to send
+
+    def _split_utf8_bytes(self, s: str, limit: int) -> list[str]:
+        """Split string into chunks not exceeding `limit` UTF-8 bytes.
+
+        Preference: split on the last newline before the limit when possible,
+        otherwise the last space. Always preserve UTF-8 code point boundaries.
+        """
+        if len(s.encode('utf-8')) <= limit:
+            return [s]
+        chunks: list[str] = []
+        start = 0
+        byte_count = 0
+        last_nl_index = -1
+        last_sp_index = -1
+        for i, ch in enumerate(s):
+            b = len(ch.encode('utf-8'))
+            if ch == '\n':
+                last_nl_index = i
+                last_sp_index = i
+            elif ch == ' ':
+                last_sp_index = i
+            if byte_count + b > limit:
+                if last_nl_index >= start:
+                    cut = last_nl_index + 1
+                elif last_sp_index >= start:
+                    cut = last_sp_index + 1
+                else:
+                    cut = i
+                chunks.append(s[start:cut])
+                start = cut
+                byte_count = 0
+                last_nl_index = -1
+                last_sp_index = -1
+            byte_count += b
+        if start < len(s):
+            chunks.append(s[start:])
+        return chunks
+
+    def _split_utf8_bytes_reserve_suffix(self, s: str, hard_limit: int) -> list[str]:
+        """Split `s` into UTF-8 chunks so that `chunk + suffix` fits `hard_limit`.
+
+        The suffix format is "\nMSG i of N". Since N is unknown up front, we do a
+        two-pass approach:
+        1) First, split optimistically with a conservative reserved budget
+           large enough for worst-case digits (assume up to 9999 chunks).
+        2) After counting chunks, we re-split only if the calculated suffix
+           for the actual N would overflow; to keep it simple and fast, we
+           use the conservative reservation for all chunks.
+
+        This keeps logic simple and avoids per-chunk reflow.
+        """
+        # First pass: split with conservative reservation for suffix
+        # Worst-case when N <= 9999: "\nMSG 9999 of 9999" -> 17 bytes (ASCII)
+        reserved = 17
+        limit = max(1, hard_limit - reserved)
+        base_chunks = self._split_utf8_bytes(s, limit)
+        if len(base_chunks) <= 1:
+            # Single chunk: no suffix needed, ensure it fits hard_limit anyway
+            if len(s.encode('utf-8')) <= hard_limit:
+                return [s]
+            # Fallback: in pathological cases, split strictly to hard_limit
+            return self._split_utf8_bytes(s, hard_limit)
+
+        # Multiple chunks: append actual suffix using true N
+        total = len(base_chunks)
+        out: list[str] = []
+        for idx, chunk in enumerate(base_chunks, start=1):
+            suffix = f"\nMSG {idx} of {total}"
+            # If chunk+suffix would overflow hard_limit (rare due to reserved), trim conservatively
+            while len((chunk + suffix).encode('utf-8')) > hard_limit and chunk:
+                # Remove last character to stay within limit
+                chunk = chunk[:-1]
+            out.append(chunk + suffix)
+        return out
 
     async def send_bell(self, dest_id: str) -> int:
         """Send a bell (notification) to a specific destination node id."""
