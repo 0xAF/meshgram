@@ -18,6 +18,7 @@ Rules:
 """
 
 import logging
+import shutil
 import re
 from typing import Any, Dict
 import itertools
@@ -44,15 +45,44 @@ def _format_value(v: LogValue) -> str:  # type: ignore[valid-type]
     s = "_".join(s.split())
     return s
 
+def _format_key(k: Any) -> str:
+    s = str(k)
+    return "_".join(s.split())
+
+def _flatten_fields(prefix: str, value: Any, out: Dict[str, Any]) -> None:
+    """Recursively flatten nested dicts/lists into dot/indexed keys.
+
+    Examples:
+      prefix={'a': 1, 'b': {'c': 2}} -> {prefix.a:1, prefix.b.c:2}
+      prefix=[10, 20] -> {prefix[0]:10, prefix[1]:20}
+    """
+    # Avoid treating strings/bytes as iterables
+    if isinstance(value, dict):
+        for k, v in value.items():
+            child_key = f"{prefix}.{_format_key(k)}"
+            _flatten_fields(child_key, v, out)
+        return
+    if isinstance(value, (list, tuple)):
+        for i, v in enumerate(value):
+            child_key = f"{prefix}[{i}]"
+            _flatten_fields(child_key, v, out)
+        return
+    out[prefix] = value
+
 def kv_line(event: str, **fields: LogValue) -> str:  # type: ignore[valid-type]
     parts: list[str] = [f"event={event}"]
+    # First flatten nested structures
+    flat: Dict[str, Any] = {}
     for k, v in fields.items():
         if v is None:
             continue
+        key = _format_key(k)
+        _flatten_fields(key, v, flat)
+    # Now render flattened pairs
+    for k, v in flat.items():
         try:
             parts.append(f"{k}={_format_value(v)}")
         except Exception:
-            # Fallback to repr if formatting fails
             parts.append(f"{k}={repr(v)}")
     return " ".join(parts)
 
@@ -210,16 +240,23 @@ class SensitiveFormatter(logging.Formatter):
                 m = re.match(r"^event=([^\s]+)(\s+.*)?$", body, flags=re.DOTALL)
                 if m:
                     event_name = m.group(1).upper()
-                    spacing = " " * 62
+                    spacing = " " * 2
                     rest = (m.group(2) or "").lstrip().replace(" ", f"\n{spacing}")
                     tag = f"[{event_name}]"
                     arrow = "\u2192"  # Unicode right arrow
-                    message = f"{prefix} {arrow} {tag}\n{spacing}{rest}\n" if rest else f"{arrow}{prefix} {arrow} {tag}\n"
+                    message = f"{prefix} {arrow} {tag}\n{spacing}{rest}" if rest else f"{arrow}{prefix} {arrow} {tag}"
         except Exception:
             # If anything goes wrong, fall back to the original message
             pass
         for pattern, replacement in self.sensitive_patterns:
             message = pattern.sub(replacement, message)
+        # Append a horizontal line separator spanning the terminal width
+        try:
+            columns = shutil.get_terminal_size(fallback=(120, 24)).columns
+        except Exception:
+            columns = 120
+        separator = "\u2500" * max(1, columns)  # '─' U+2500
+        message = f"{message}\n{separator}"
         if record.levelno == logging.DEBUG:
             return f"{self.grey}{message}{self.reset}"
         if record.levelno == logging.INFO:
