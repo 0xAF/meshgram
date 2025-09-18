@@ -222,6 +222,7 @@ class SensitiveFormatter(logging.Formatter):
     blue = "\x1b[34;20m"
     red = "\x1b[31;20m"
     bold_red = "\x1b[31;1m"
+    magenta = "\x1b[35;20m"
     reset = "\x1b[0m"
 
     def format(self, record: logging.LogRecord) -> str:  # pragma: no cover - cosmetic
@@ -257,17 +258,27 @@ class SensitiveFormatter(logging.Formatter):
             columns = 120
         separator = "\u2500" * max(1, columns)  # '─' U+2500
         message = f"{message}\n{separator}"
-        if record.levelno == logging.DEBUG:
-            return f"{self.grey}{message}{self.reset}"
-        if record.levelno == logging.INFO:
-            return f"{self.blue}{message}{self.reset}"
-        if record.levelno == logging.WARNING:
-            return f"{self.yellow}{message}{self.reset}"
-        if record.levelno == logging.ERROR:
-            return f"{self.red}{message}{self.reset}"
+        # Choose active color by level
         if record.levelno >= logging.CRITICAL:
-            return f"{self.bold_red}{message}{self.reset}"
-        return message
+            active = self.bold_red
+        elif record.levelno == logging.ERROR:
+            active = self.red
+        elif record.levelno == logging.WARNING:
+            active = self.yellow
+        elif record.levelno == logging.INFO:
+            active = self.blue
+        elif record.levelno == logging.DEBUG:
+            active = self.grey
+        else:
+            active = ""
+
+        # Color '=' as magenta and then return to active color
+        if active:
+            message_colored = message.replace("=", f"{self.magenta}={active}")
+            return f"{active}{message_colored}{self.reset}"
+        else:
+            message_colored = message.replace("=", f"{self.magenta}=\x1b[0m")
+            return f"{message_colored}{self.reset}"
 
 
 def _parse_log_level(level: Any) -> int:
