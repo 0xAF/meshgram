@@ -210,11 +210,11 @@ class SensitiveFormatter(logging.Formatter):
                 m = re.match(r"^event=([^\s]+)(\s+.*)?$", body, flags=re.DOTALL)
                 if m:
                     event_name = m.group(1).upper()
-                    rest = (m.group(2) or "").lstrip()
+                    spacing = " " * 62
+                    rest = (m.group(2) or "").lstrip().replace(" ", f"\n{spacing}")
                     tag = f"[{event_name}]"
                     arrow = "\u2192"  # Unicode right arrow
-                    spacing = " " * 60
-                    message = f"{prefix} {arrow} {tag}\n{spacing}{arrow} {rest}\n" if rest else f"{arrow}{prefix} {arrow} {tag}\n"
+                    message = f"{prefix} {arrow} {tag}\n{spacing}{rest}\n" if rest else f"{arrow}{prefix} {arrow} {tag}\n"
         except Exception:
             # If anything goes wrong, fall back to the original message
             pass
