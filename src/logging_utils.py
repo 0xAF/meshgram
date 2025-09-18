@@ -201,6 +201,23 @@ class SensitiveFormatter(logging.Formatter):
         record.caller_pad = caller.ljust(30)
 
         message = super().format(record)
+        # Transform leading 'event=...' into bracketed tag [EVENT] at the start of the log body
+        # We only transform the portion after the first ' - ' separator in the format string
+        try:
+            prefix, sep, body = message.partition(' - ')
+            if sep:  # Only if our expected separator is present
+                # body is everything after the first ' - '
+                m = re.match(r"^event=([^\s]+)(\s+.*)?$", body, flags=re.DOTALL)
+                if m:
+                    event_name = m.group(1).upper()
+                    rest = (m.group(2) or "").lstrip()
+                    tag = f"[{event_name}]"
+                    arrow = "\u2192"  # Unicode right arrow
+                    spacing = " " * 60
+                    message = f"{prefix} {arrow} {tag}\n{spacing}{arrow} {rest}\n" if rest else f"{arrow}{prefix} {arrow} {tag}\n"
+        except Exception:
+            # If anything goes wrong, fall back to the original message
+            pass
         for pattern, replacement in self.sensitive_patterns:
             message = pattern.sub(replacement, message)
         if record.levelno == logging.DEBUG:
