@@ -143,6 +143,7 @@ Enabled via `meshtastic.commands.*` and AI feature flag `aim`:
 - `/travel` – Sends a short safety reminder (toggle via `meshtastic.commands.travel`).
 - `/ai <prompt>` – Chat with the local AI model (requires both `meshtastic.commands.ai: true` and `meshtastic.ai_enabled: true`). History is per node shortName (fallback node id).
 - `/aireset` – Reset this node's AI conversation context (same enablement requirements as `/ai`).
+- `/admin <command> [args]` - Admin commands for `meshtastic.admin_nodes`
 
 Notes:
 

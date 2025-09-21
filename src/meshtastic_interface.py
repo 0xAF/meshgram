@@ -534,6 +534,22 @@ class MeshtasticInterface:
 
             await asyncio.sleep(interval)
 
+    async def reboot_node(self) -> None:
+        """Restart the local node via the Meshtastic interface, if supported."""
+        if not self.interface:
+            self.logger.error("Cannot reboot node: interface not initialized.")
+            return
+        try:
+            # local_node = getattr(self.interface, "localNode", None)
+            # restart_fn = getattr(local_node, "reboot", None)
+            # await asyncio.to_thread(self.interface.localNode.reboot(5))  # type: ignore[attr-defined]
+            self.logger.info("mt_node_reboot", instance=self.instance_id, node_id=self.my_node_id)
+            self.interface.localNode.reboot(5)  # type: ignore[attr-defined]
+            self.logger.info("Local node reboot command issued. Reboot will happen in 5 seconds.")
+        except Exception as e:
+            self.logger.error(f"Error rebooting local node: {e}", exc_info=True)
+            self.logger.error("mt_node_reboot_error", instance=self.instance_id, error=str(e))
+
     async def request_nodeinfo(self, node_id: str) -> None:
         """Best-effort request to retrieve metadata for a remote node.
 

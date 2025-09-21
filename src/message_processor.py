@@ -3,6 +3,7 @@ from __future__ import annotations
 # pyright: reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnknownVariableType=false, reportUnknownParameterType=false, reportAny=false
 
 import asyncio
+from operator import is_
 import signal
 from importlib import import_module
 from typing import TypedDict, Literal, Protocol, NotRequired, cast, Any, Dict
@@ -419,7 +420,7 @@ class MessageProcessor:
 
     async def handle_text_message_app(self, packet: dict[str, object]) -> None:  # type: ignore[override]
         """Format and forward a Meshtastic text message to Telegram (enriched logging)."""
-        self.logger.info( "mt_handle_text", from_id=packet.get('fromId'), to_id=packet.get('toId'), channel=packet.get('channel'))
+        self.logger.info( "mt_handle_text", from_id=packet.get('fromId'), to_id=packet.get('toId'), channel=packet.get('channel'), text=packet.get('decoded', {}).get('payload'))
         bridge_id = new_id()
         sender = str(packet.get('fromId', 'unknown'))
         recipient = str(packet.get('toId', 'unknown'))
@@ -508,18 +509,21 @@ class MessageProcessor:
         except Exception:
             pass
 
+        receive_only_channels = self.config.get('meshtastic.receive_only_channels', [])  # type: ignore[assignment]
+
         # Normalize AI triggers: if text starts with ai/bot/ии/аи/бот (with or without colon), replace with "/ai "
         ai_triggers = ["ai", "bot", "аи", "ии", "бот"]
-        for trigger in ai_triggers:
-            for sep in ("", ":", ","):
-                prefix = f"{trigger}{sep}"
-                if isinstance(text, str) and text.lower().startswith(prefix):
-                    # Replace only at the start
-                    text = "/ai " + text[len(prefix):].lstrip()
-                    break
-            else:
-                continue
-            break
+        if channel_num not in receive_only_channels:
+            for trigger in ai_triggers:
+                for sep in ("", ":", ","):
+                    prefix = f"{trigger}{sep}"
+                    if isinstance(text, str) and text.lower().startswith(prefix):
+                        # Replace only at the start
+                        text = "/ai " + text[len(prefix):].lstrip()
+                        break
+                else:
+                    continue
+                break
 
         # Detect "flight", "plane", airplane emoji, or similar words and prepend "/ai " if found
         travel_keywords = [
@@ -536,42 +540,48 @@ class MessageProcessor:
             # General travel/holiday emojis
             "🌍", "🌎", "🌏", "🗺️", "🧳", "🏨", "🏩", "🏬", "🏯", "🏰", "🗽", "🗼", "🕌", "⛩️", "🕍", "🛎️", "🏝️", "🏖️", "🏜️", "🏟️", "🎢", "🎡", "🎠",
         ]
-        text_lower = text.lower() if isinstance(text, str) else ""
-        if any(word in text_lower for word in travel_keywords):
-            if not text_lower.startswith("/travel "):
-                text = "/travel " + text
+        if channel_num not in receive_only_channels:
+            text_lower = text.lower() if isinstance(text, str) else ""
+            if any(word in text_lower for word in travel_keywords):
+                if not text_lower.startswith("/travel "):
+                    text = "/travel " + text
         
         is_command: str | None = None
-        if isinstance(text, str) and text.startswith('/'):
-            parts = text.split()
-            cmd = parts[0][1:].partition('@')[0].lower()
-            args = parts[1:]
-            handler_name = f"handle_mesh_cmd_{cmd}"
-            handler = getattr(self, handler_name, None)
-            if handler:
-                try:
-                    is_command = cmd
-                    text = await handler(
-                        sender=sender,
-                        recipient=recipient,
-                        channel_num=channel_num,
-                        hops_start=hops_start,
-                        hops_limit=hops_limit,
-                        hops_away=hops_away,
-                        mqtt=mqtt,
-                        rssi=rssi,
-                        snr=snr,
-                        bridge_id=bridge_id,
-                        args=args,
-                        from_short=from_short,
-                        to_short=to_short,
-                        signal_emoji=signal_emoji,
-                        signal_label=signal_label,
-                        reply_directly=self.config.get('meshtastic.reply_directly', False),
-                    )
-                except Exception as e:
-                    self.logger.error(f"Mesh command '/{cmd}' failed: {e}", exc_info=True)
-            # If no handler, fall through and forward the original text
+        if channel_num not in receive_only_channels:
+            if isinstance(text, str) and text.startswith('/'):
+                parts = text.split()
+                cmd = parts[0][1:].partition('@')[0].lower()
+                args = parts[1:]
+                handler_name = f"handle_mesh_cmd_{cmd}"
+                handler = getattr(self, handler_name, None)
+                if handler:
+                    try:
+                        is_command = cmd
+                        text = await handler(
+                            sender=sender,
+                            recipient=recipient,
+                            channel_num=channel_num,
+                            hops_start=hops_start,
+                            hops_limit=hops_limit,
+                            hops_away=hops_away,
+                            mqtt=mqtt,
+                            rssi=rssi,
+                            snr=snr,
+                            bridge_id=bridge_id,
+                            args=args,
+                            from_short=from_short,
+                            to_short=to_short,
+                            signal_emoji=signal_emoji,
+                            signal_label=signal_label,
+                            reply_directly=self.config.get('meshtastic.reply_directly', False),
+                        )
+                    except Exception as e:
+                        self.logger.error(f"Mesh command '/{cmd}' failed: {e}", exc_info=True)
+                # If no handler, fall through and forward the original text
+
+        if is_command:
+            self.logger.info("mesh_command", instance=self.instance_id, bridge_id=bridge_id, command=is_command, from_id=sender, to_id=recipient, from_short=from_short, to_short=to_short, hops_away=hops_away, hop_limit=hops_limit, hop_start=hops_start, rssi=rssi, snr=snr, mqtt=mqtt)
+            self.logger.info(f"CMD[{is_command}] from {from_short}:\nREQ: {request}\nRPL: {text}")
 
         # Persist message to sqlite3 (per-channel table or DIRECT_MESSAGES)
         try:
@@ -638,6 +648,8 @@ class MessageProcessor:
         if len(log_text) > 160:
             log_text = log_text[:160] + '…'
         self.logger.debug("bridge_render", instance=self.instance_id, bridge_id=bridge_id, direction="mesh_to_tg", message_text=log_text)
+        if channel_num in receive_only_channels:
+            message = f"[🚫🤐]  {message}";
         _ = await self.telegram.send_message(message, disable_notification=False, topic=f"channel{channel_num}" if not recipient.startswith('!') else "default")
         self.logger.info("bridge_sent", instance=self.instance_id, bridge_id=bridge_id, direction="mesh_to_tg")
         # self.logger.info("bridge_complete", instance=self.instance_id, bridge_id=bridge_id, direction="mesh_to_tg")
@@ -1011,24 +1023,34 @@ class MessageProcessor:
         """Handle '/help' issued from the mesh text app and return the reply text."""
         if not self.mesh_commands.get('help', False):
             return f"{from_short} → help not enabled"
-        cmds_ping = "/ping" + (" (disabled)" if not self.mesh_commands.get('ping', False) else "")
+
+        cmds_ping = "• /ping" + (" (disabled)" if not self.mesh_commands.get('ping', False) else "") + " - link stats"
         ai_enabled = self.mesh_commands.get('ai', False) and self.ai_enabled_mesh
-        cmds_ai = "/ai" + (" (disabled)" if not ai_enabled else "")
-        cmds_aireset = "/aireset" + (" (disabled)" if not ai_enabled else "")
-        cmds_travel = "/travel" + (" (disabled)" if not self.config.get('meshtastic.commands.travel', True) else "")
+        cmds_ai = "• /ai" + (" (disabled)" if not ai_enabled else "") + " - chat with AI model"
+        cmds_aireset = "• /aireset" + (" (disabled)" if not ai_enabled else "") + " - reset AI context"
+        cmds_travel = "• /travel" + (" (disabled)" if not self.config.get('meshtastic.commands.travel', True) else "") + " - travel safety reminder"
+
+        admins = self.config.get('meshtastic.admin_nodes', [])
+        sender1 = sender
+        if isinstance(sender1, str) and sender1.startswith('!'):
+            sender1 = sender1[1:]
+        is_admin = sender1 in admins
+
+        cmds_admin = ""
+        if is_admin:
+            cmds_admin = "• /admin - admin commands"
+            
         lines = [
-            "Mesh commands:",
-            f"• {cmds_ping}",
-            f"• {cmds_travel}",
-            f"• {cmds_ai}",
-            f"• {cmds_aireset}",
-            "Use '/ping' for link stats.",
-            "Use '/travel' for a short safety reminder.",
-            "Use '/ai <prompt>' to chat with the AI model (if enabled).",
-            "Use '/aireset' to reset your AI context (if enabled)."
+            "Mesh commands:\n",
+            f"{cmds_ping}\n",
+            f"{cmds_travel}\n",
+            f"{cmds_ai}\n",
+            f"{cmds_aireset}\n",
+            f"{cmds_admin}",
         ]
         help_text = "\n".join(lines)
         self.logger.info("help_command_rx", instance=self.instance_id, bridge_id=bridge_id, sender=sender, recipient=recipient, from_short=from_short, to_short=to_short, channel=channel_num)
+
         send_to = sender
         if recipient == "^all":
             send_to = "^all"
@@ -1158,6 +1180,60 @@ class MessageProcessor:
         except Exception as e:
             self.logger.error(f"Failed to send travel reply: {e}", exc_info=True)
         return reply_text
+
+    async def handle_mesh_cmd_admin(self, *, sender: str, recipient: str, channel_num: int, hops_start: int, hops_limit: int, hops_away: int, mqtt: bool, rssi: Any, snr: Any, bridge_id: int, args: list[str], from_short: str, to_short: str, signal_emoji: str, signal_label: str, reply_directly: bool = False) -> str:
+        admin_text = ""
+        admins = self.config.get('meshtastic.admin_nodes', [])
+        sender1 = sender
+        if isinstance(sender1, str) and sender1.startswith('!'):
+            sender1 = sender1[1:]
+        is_admin = sender1 in admins
+        if not is_admin:
+            admin_text = f"{from_short} → admin command denied"
+        elif not args:
+            admin_text = "\n\n".join([
+                f"{from_short} → usage: /admin \\<command> [args]",
+                "Available commands:",
+                "• reboot - reboot the node",
+            ])
+
+        else:
+            subcmd = args[0].lower()
+            if subcmd == 'reboot':
+                try:
+                    await self.meshtastic.reboot_node()
+                    admin_text = f"{from_short} → node reboot in 5 seconds requested"
+                except Exception as e:
+                    self.logger.error(f"Failed to reboot node {sender}: {e}", exc_info=True)
+                    admin_text = f"{from_short} → failed to reboot node: {e}"
+
+        send_to = sender
+        if recipient == "^all":
+            send_to = "^all"
+        else:
+            channel_num = 0  # direct message
+        if reply_directly:
+            send_to = sender
+            channel_num = 0  # direct message
+        try:
+            meshtastic_message_id = await self.meshtastic.send_message(admin_text, send_to, channel=channel_num)
+            self.pending_acks[meshtastic_message_id] = {
+                'telegram_message_id': 0,
+                'telegram_thread_id': 0,
+                'timestamp': datetime.now(timezone.utc)
+            }
+            self.logger.info(
+                "admin_command_reply_sent",
+                instance=self.instance_id,
+                bridge_id=bridge_id,
+                meshtastic_message_id=meshtastic_message_id,
+                from_short=from_short,
+                to_short=to_short,
+            )
+        except Exception as e:
+            self.logger.error(f"Failed to send help reply: {e}", exc_info=True)
+
+        return admin_text
 
     async def handle_traceroute_app(self, _packet: Dict[str, Any]) -> None:
         self.logger.info("[Meshtastic] Traceroute app packet received (ignored)")

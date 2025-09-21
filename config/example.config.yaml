@@ -35,8 +35,12 @@ meshtastic:
   default_node_id: "^all"
   # Default mesh channel index for outbound messages (0..N)
   default_channel_id: 0
-  # Channels to ignore (do not forward to Telegram)
+  # Channels to ignore (do not forward to Telegram and do not respond)
   # ignored_channels: [1, 2]
+  receive_only_channels: []  # channels to receive only (forwarding to Telegram, but do not respond in channels)
+
+  admin_nodes:
+    - '1b8c7774' # node id of an admin node that can use /admin command
 
   commands:
     ping: True # /ping command to get your hop count and node id back
