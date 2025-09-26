@@ -1146,7 +1146,9 @@ class MessageProcessor:
         # Important: do NOT pre-split here. Let MeshtasticInterface handle chunking
         # so it can append "MSG i of N" suffixes consistently across the whole message.
         try:
-            _ = await self.meshtastic.send_message(reply_full, send_to, channel=channel_num)
+            # Include requester's shortname so it prefixes each chunk (AI responses only)
+            requester_sn = from_short if isinstance(from_short, str) else None
+            _ = await self.meshtastic.send_message(reply_full, send_to, channel=channel_num, sender_shortname=requester_sn)
         except Exception:
             pass
         # Provide the full reply for logging/confirmation

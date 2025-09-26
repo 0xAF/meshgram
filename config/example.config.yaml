@@ -38,6 +38,11 @@ meshtastic:
   default_channel_id: 0
   # Delay between sending message chunks (milliseconds)
   send_delay_ms: 200
+  # Maximum number of chunks to send per message (excess will be summarized)
+  max_send_chunks: 5
+  # Template for truncation notice when a message exceeds max_send_chunks.
+  # Use {omitted} to interpolate the number of omitted chunks.
+  truncation_notice_template: "\n...and {omitted} more chunk(s) not sent: message too large"
   # Channels to ignore (do not forward to Telegram and do not respond)
   ignored_channels: []
   # Channels to receive-only (forward to Telegram but do not respond in those channels)

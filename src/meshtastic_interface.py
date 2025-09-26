@@ -23,6 +23,8 @@ from meshtastic import BROADCAST_ADDR
 
 MESSAGE_MAX_LEN = 230  # Meshtastic message size hard limit (bytes / characters)
 HEALTH_CHECK_INTERVAL_SECONDS = 5
+DEFAULT_MAX_SEND_CHUNKS = 5  # Default max number of chunks to send per message
+DEFAULT_TRUNCATION_NOTICE_TEMPLATE = "\n...and {omitted} more chunk(s) not sent: message too large"
 
 
 class DeviceMetrics(TypedDict):
@@ -63,7 +65,10 @@ class MeshtasticInterface:
     is_setup: bool
     is_closing: bool
     my_node_id: str
+    my_short_name: str
     send_delay_seconds: float
+    max_send_chunks: int
+    truncation_notice_template: str
     on_reconnect_storm: Optional[Callable[[], Awaitable[None]]]
     _reconnect_attempts: deque[datetime]
     _reconnect_storm_triggered: bool
@@ -87,6 +92,7 @@ class MeshtasticInterface:
         self.is_setup = False
         self.is_closing = False
         self.my_node_id = ""
+        self.my_short_name = ""
         # Reconnect storm handling
         self.on_reconnect_storm = on_reconnect_storm
         self._reconnect_attempts = deque()
@@ -100,6 +106,23 @@ class MeshtasticInterface:
             self.send_delay_seconds = float(delay_ms) / 1000.0
         except Exception:
             self.send_delay_seconds = 0.2
+        # Configurable max chunks
+        try:
+            msc = self.config.get('meshtastic.max_send_chunks', DEFAULT_MAX_SEND_CHUNKS)
+            msc = int(msc) if not isinstance(msc, int) else msc
+            if msc < 1:
+                msc = 1
+            self.max_send_chunks = msc
+        except Exception:
+            self.max_send_chunks = DEFAULT_MAX_SEND_CHUNKS
+        # Configurable truncation notice template with {omitted}
+        try:
+            tmpl = self.config.get('meshtastic.truncation_notice_template', DEFAULT_TRUNCATION_NOTICE_TEMPLATE)
+            if not isinstance(tmpl, str) or '{omitted}' not in tmpl:
+                tmpl = DEFAULT_TRUNCATION_NOTICE_TEMPLATE
+            self.truncation_notice_template = tmpl
+        except Exception:
+            self.truncation_notice_template = DEFAULT_TRUNCATION_NOTICE_TEMPLATE
 
     async def setup(self) -> None:
         """Create the low-level meshtastic interface and subscribe for packets."""
@@ -151,6 +174,17 @@ class MeshtasticInterface:
             user_part = raw_info.get('user')
             node_id = user_part.get('id') if isinstance(user_part, dict) else None
             self.my_node_id = node_id if isinstance(node_id, str) else ""
+            # Derive short name (max 4 bytes) for prefixing outbound chunks
+            try:
+                sn = user_part.get('shortName') if isinstance(user_part, dict) else None
+                if isinstance(sn, str) and sn.strip():
+                    self.my_short_name = self._normalize_shortname(sn.strip())
+                else:
+                    fallback = (self.my_node_id or "").replace('!', '')
+                    self.my_short_name = self._normalize_shortname(fallback[:4] if fallback else "BOT")
+            except Exception:
+                fallback = (self.my_node_id or "").replace('!', '')
+                self.my_short_name = self._normalize_shortname(fallback[:4] if fallback else "BOT")
             if self.my_node_id:
                 self.logger.info("mt_node_info_received", instance=self.instance_id, node_id=self.my_node_id)
                 # self.logger.info(f"Node info: {raw_info}")
@@ -227,7 +261,7 @@ class MeshtasticInterface:
             self.logger.error(f"Error sending reaction to Meshtastic: {e=}", exc_info=True)
             self.logger.error("mt_reaction_error", instance=self.instance_id, emoji=emoji, message_id=message_id, error=str(e))
 
-    async def send_message(self, text: str, recipient: str, channel: int | None = None) -> int:
+    async def send_message(self, text: str, recipient: str, channel: int | None = None, *, sender_shortname: str | None = None) -> int:
         """Split the message into chunks and enqueue them for paced sending.
 
         A background worker sends each chunk sequentially with a configurable
@@ -242,16 +276,17 @@ class MeshtasticInterface:
         except Exception:
             pass
 
-        # Split into chunks (with "\nMSG i of N" suffix preserved by helper)
-        chunks = self._split_utf8_bytes_reserve_suffix(text, MESSAGE_MAX_LEN)
+        # Split into chunks; include an optional requester shortname prefix (max 4 bytes)
+        prefix = self._make_short_prefix(sender_shortname) if sender_shortname else ""
+        chunks, full_total, omitted = self._build_chunks_with_prefix_suffix(text, MESSAGE_MAX_LEN, prefix=prefix, max_chunks=self.max_send_chunks)
         # Log chunking plan to help diagnose suffix behavior
         try:
             total = len(chunks)
             if total > 1:
                 preview = [(i + 1, len(c.encode('utf-8'))) for i, c in enumerate(chunks)]
-                self.logger.info("mt_chunk_plan", instance=self.instance_id, recipient=recipient, channel=channel, total_chunks=total, sizes=preview)
+                self.logger.info("mt_chunk_plan", instance=self.instance_id, recipient=recipient, channel=channel, total_chunks=total, full_total=full_total, omitted=omitted, sizes=preview)
             else:
-                self.logger.info("mt_chunk_plan", instance=self.instance_id, recipient=recipient, channel=channel, total_chunks=total, sizes=[len(chunks[0].encode('utf-8')) if chunks else 0])
+                self.logger.info("mt_chunk_plan", instance=self.instance_id, recipient=recipient, channel=channel, total_chunks=total, full_total=full_total, omitted=omitted, sizes=[len(chunks[0].encode('utf-8')) if chunks else 0])
         except Exception:
             pass
         # Enqueue job and await first chunk result
@@ -288,8 +323,8 @@ class MeshtasticInterface:
                         try:
                             self.logger.info("mt_send_success", instance=self.instance_id, recipient=recipient, channel=channel, message_id=getattr(result, 'id', None))
                             # Check whether the suffix is present for diagnostics
-                            suffix_str = f"\nMSG {idx} of {total_chunks}"
-                            has_suffix = chunk.endswith(suffix_str)
+                            # Suffix detection tolerant to truncated totals
+                            has_suffix = "\nMSG " in chunk
                             self.logger.info(
                                 "mt_send_chunk",
                                 instance=self.instance_id,
@@ -394,7 +429,7 @@ class MeshtasticInterface:
             chunks.append(s[start:])
         return chunks
 
-    def _split_utf8_bytes_reserve_suffix(self, s: str, hard_limit: int) -> list[str]:
+    def _split_utf8_bytes_reserve_suffix(self, s: str, hard_limit: int, *, prefix: str = "") -> list[str]:
         """Split `s` into UTF-8 chunks so that `chunk + suffix` fits `hard_limit`.
 
         The suffix format is "\nMSG i of N". Since N is unknown up front, we do a
@@ -407,29 +442,87 @@ class MeshtasticInterface:
 
         This keeps logic simple and avoids per-chunk reflow.
         """
-        # First pass: split with conservative reservation for suffix
-        # Worst-case when N <= 9999: "\nMSG 9999 of 9999" -> 17 bytes (ASCII)
-        reserved = 17
-        limit = max(1, hard_limit - reserved)
-        base_chunks = self._split_utf8_bytes(s, limit)
-        if len(base_chunks) <= 1:
-            # Single chunk: no suffix needed, ensure it fits hard_limit anyway
-            if len(s.encode('utf-8')) <= hard_limit:
-                return [s]
-            # Fallback: in pathological cases, split strictly to hard_limit
-            return self._split_utf8_bytes(s, hard_limit)
+        # Normalized sizes
+        prefix_b = prefix.encode('utf-8') if prefix else b""
+        prefix_len = len(prefix_b)
+        # Worst-case suffix when N <= 9999: "\nMSG 9999 of 9999" -> 17 bytes (ASCII)
+        reserved_suffix = 17
+        limit = max(1, hard_limit - reserved_suffix - prefix_len)
 
-        # Multiple chunks: append actual suffix using true N
+        # If it fits in one without suffix, return single prefixed chunk
+        if len((prefix + s).encode('utf-8')) <= hard_limit:
+            return [prefix + s]
+
+        # First pass: split with conservative reservation for prefix+suffix budget
+        base_chunks = self._split_utf8_bytes(s, limit)
+        # Multiple chunks: append actual suffix using true N and ensure prefix+chunk+suffix fits
         total = len(base_chunks)
         out: list[str] = []
         for idx, chunk in enumerate(base_chunks, start=1):
-            suffix = f"\n\nMSG {idx} of {total}"
-            # If chunk+suffix would overflow hard_limit (rare due to reserved), trim conservatively
-            while len((chunk + suffix).encode('utf-8')) > hard_limit and chunk:
-                # Remove last character to stay within limit
+            suffix = f"\nMSG {idx} of {total}"
+            # Trim if prefix + chunk + suffix would overflow
+            while len((prefix + chunk + suffix).encode('utf-8')) > hard_limit and chunk:
                 chunk = chunk[:-1]
-            out.append(chunk + suffix)
+            out.append(prefix + chunk + suffix)
         return out
+
+    def _build_chunks_with_prefix_suffix(self, s: str, hard_limit: int, *, prefix: str = "", max_chunks: int = DEFAULT_MAX_SEND_CHUNKS) -> tuple[list[str], int, int]:
+        """Produce chunks with prefix and MSG suffix, capping the number of sent chunks.
+
+        Returns (chunks_to_send, full_total_chunks, omitted_count).
+        If omitted_count > 0, the last chunk_to_send contains an extra explanatory line.
+        """
+        all_chunks = self._split_utf8_bytes_reserve_suffix(s, hard_limit, prefix=prefix)
+        full_total = len(all_chunks)
+        if full_total <= max_chunks:
+            return all_chunks, full_total, 0
+
+        # We need to send at most max_chunks. We'll send the first max_chunks-1 normal chunks,
+        # and make the last chunk an explanatory notice.
+        send_count = max(1, max_chunks - 1)
+        chunks_to_send = all_chunks[:send_count]
+        omitted = full_total - send_count
+        # Build notice from template
+        try:
+            notice = self.truncation_notice_template.format(omitted=omitted)
+        except Exception:
+            notice = DEFAULT_TRUNCATION_NOTICE_TEMPLATE.format(omitted=omitted)
+        # Build a final notice chunk (with same prefix), ensure it fits by trimming if needed
+        final_chunk = (prefix + notice) if prefix else notice
+        # Trim if needed to fit within hard_limit
+        while len(final_chunk.encode('utf-8')) > hard_limit and len(notice) > 0:
+            notice = notice[:-1]
+            final_chunk = (prefix + notice) if prefix else notice
+        chunks_to_send.append(final_chunk)
+        return chunks_to_send, full_total, omitted
+
+    def _normalize_shortname(self, s: str) -> str:
+        """Return a string trimmed so its UTF-8 byte length is at most 4."""
+        if not s:
+            return ""
+        out = []
+        total = 0
+        for ch in s:
+            b = len(ch.encode('utf-8'))
+            if total + b > 4:
+                break
+            out.append(ch)
+            total += b
+        return "".join(out)
+
+    def _make_short_prefix(self, shortname: str | None = None) -> str:
+        """Build the per-chunk prefix like "SN: ".
+
+        If a shortname is provided (e.g., requester), normalize and use it; otherwise
+        fall back to this node's my_short_name. Returns empty string when unavailable.
+        """
+        if shortname is not None and isinstance(shortname, str) and shortname.strip():
+            sn = self._normalize_shortname(shortname.strip())
+        else:
+            sn = self.my_short_name.strip() if isinstance(self.my_short_name, str) else ""
+        if not sn:
+            return ""
+        return f"{sn}: "
 
     async def send_bell(self, dest_id: str) -> int:
         """Send a bell (notification) to a specific destination node id."""
