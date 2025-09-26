@@ -3,9 +3,10 @@ from __future__ import annotations
 import asyncio
 import queue
 import logging
-from typing import Dict, Any, TypedDict, cast
+from typing import Dict, Any, TypedDict, cast, Callable, Awaitable, Optional
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from collections import deque
 from meshtastic import tcp_interface, serial_interface
 from meshtastic.serial_interface import SerialInterface
 from meshtastic.tcp_interface import TCPInterface
@@ -36,13 +37,16 @@ class NodeInfo(TypedDict):
     user: Dict[str, Any]
     deviceMetrics: DeviceMetrics
 
+"""PendingMessage removed: retry logic is handled by the outgoing queue re-enqueue."""
+
 @dataclass
-class PendingMessage:
-    """Represents a message waiting to be (re)sent with retry bookkeeping."""
-    text: str
+class OutgoingJob:
+    """Represents a queued outbound message split into chunks to send sequentially."""
+    chunks: list[str]
     recipient: str
+    channel: int | None
+    result_fut: Optional[asyncio.Future[int]]
     attempts: int = 0
-    last_attempt: datetime | None = field(default=None)
 
 class MeshtasticInterface:
     config: ConfigManager
@@ -50,8 +54,8 @@ class MeshtasticInterface:
     interface: SerialInterface | TCPInterface | None
     message_queue: asyncio.Queue[dict[str, object]]
     thread_safe_queue: queue.Queue[dict[str, object]]
+    outgoing_queue: asyncio.Queue[OutgoingJob]
     loop: asyncio.AbstractEventLoop
-    pending_messages: list[PendingMessage]
     last_telemetry: dict[str, object]
     max_retries: int
     retry_interval: int
@@ -59,8 +63,13 @@ class MeshtasticInterface:
     is_setup: bool
     is_closing: bool
     my_node_id: str
+    send_delay_seconds: float
+    on_reconnect_storm: Optional[Callable[[], Awaitable[None]]]
+    _reconnect_attempts: deque[datetime]
+    _reconnect_storm_triggered: bool
+    _send_in_progress: asyncio.Event
 
-    def __init__(self, config: ConfigManager) -> None:
+    def __init__(self, config: ConfigManager, on_reconnect_storm: Optional[Callable[[], Awaitable[None]]] = None) -> None:
         """Initialize interface state but do not connect yet."""
         self.config = config
         # get_logger() returns a StructuredLogger at runtime via configure_logging
@@ -69,8 +78,8 @@ class MeshtasticInterface:
         self.interface = None
         self.message_queue = asyncio.Queue()
         self.thread_safe_queue = queue.Queue()
+        self.outgoing_queue = asyncio.Queue()
         self.loop = asyncio.get_running_loop()
-        self.pending_messages = []
         self.last_telemetry = {}
         self.max_retries = 3
         self.retry_interval = 60
@@ -78,6 +87,19 @@ class MeshtasticInterface:
         self.is_setup = False
         self.is_closing = False
         self.my_node_id = ""
+        # Reconnect storm handling
+        self.on_reconnect_storm = on_reconnect_storm
+        self._reconnect_attempts = deque()
+        self._reconnect_storm_triggered = False
+        self._send_in_progress = asyncio.Event()
+        # Configurable send delay (ms -> seconds)
+        try:
+            delay_ms = self.config.get('meshtastic.send_delay_ms', 200)
+            if not isinstance(delay_ms, (int, float)):
+                delay_ms = 200
+            self.send_delay_seconds = float(delay_ms) / 1000.0
+        except Exception:
+            self.send_delay_seconds = 0.2
 
     async def setup(self) -> None:
         """Create the low-level meshtastic interface and subscribe for packets."""
@@ -206,50 +228,134 @@ class MeshtasticInterface:
             self.logger.error("mt_reaction_error", instance=self.instance_id, emoji=emoji, message_id=message_id, error=str(e))
 
     async def send_message(self, text: str, recipient: str, channel: int | None = None) -> int:
-        """Send a text message; queues for retry on failure.
+        """Split the message into chunks and enqueue them for paced sending.
 
-        Splits into multiple 200-byte UTF-8 chunks (preferring newline breaks)
-        and sends each sequentially.
-
-        Returns the first chunk's meshtastic message id if at least one chunk
-        succeeds; otherwise -1 (and schedules retry of the full message).
+        A background worker sends each chunk sequentially with a configurable
+        delay (meshtastic.send_delay_ms, default 200ms). Returns the first
+        chunk's message id, or -1 if the first attempt fails.
         """
         if not text or not recipient:
             raise ValueError("Text and recipient must not be empty")
         # Log based on bytes for accuracy
-        self.logger.info("mt_send_attempt", instance=self.instance_id, recipient=recipient, channel=channel, size=len(text.encode('utf-8')))
         try:
-            explicit_channel = channel is not None
-            if channel is None:
-                channel = self.config.get('meshtastic.default_channel_id', 0)
-                # Defensive: config might return unexpected type (e.g., 'serial' from earlier generic mock)
-                if not isinstance(channel, int):
-                    channel = 0
-            self.logger.debug(f"Sending message to Meshtastic {channel=} with {recipient=}")
-            iface = self._require_interface()
+            self.logger.info("mt_send_attempt", instance=self.instance_id, recipient=recipient, channel=channel, size=len(text.encode('utf-8')))
+        except Exception:
+            pass
 
-            # Split into UTF-8 byte chunks using MESSAGE_MAX_LEN while reserving
-            # room for the trailing "\nMSG i of N" suffix per chunk.
-            chunks = self._split_utf8_bytes_reserve_suffix(text, MESSAGE_MAX_LEN)
-            first_id: int | None = None
-            for idx, chunk in enumerate(chunks, start=1):
-                if explicit_channel:
-                    result = await asyncio.to_thread(iface.sendText, chunk, destinationId=recipient, channelIndex=int(channel))  # type: ignore[attr-defined]
-                else:
-                    result = await asyncio.to_thread(iface.sendText, chunk, destinationId=recipient)  # type: ignore[attr-defined]
-                if first_id is None:
-                    first_id = getattr(result, 'id', None)
-                self.logger.info("mt_send_success", instance=self.instance_id, recipient=recipient, channel=channel, message_id=getattr(result, 'id', None))
-                self.logger.debug("mt_send_chunk", instance=self.instance_id, chunk_index=idx, total_chunks=len(chunks), bytes=len(chunk.encode('utf-8')))
-            return first_id if isinstance(first_id, int) else -1
-        except Exception as e:
-            self.logger.error(f"Error sending message to Meshtastic: {e=}", exc_info=True)
-            self.logger.error("mt_send_failure", instance=self.instance_id, recipient=recipient, channel=channel, error=str(e))
-            if "Data payload too big" in str(e):
-                self.logger.error("mt_send_too_big", instance=self.instance_id, recipient=recipient, channel=channel)
+        # Split into chunks (with "\nMSG i of N" suffix preserved by helper)
+        chunks = self._split_utf8_bytes_reserve_suffix(text, MESSAGE_MAX_LEN)
+        # Log chunking plan to help diagnose suffix behavior
+        try:
+            total = len(chunks)
+            if total > 1:
+                preview = [(i + 1, len(c.encode('utf-8'))) for i, c in enumerate(chunks)]
+                self.logger.info("mt_chunk_plan", instance=self.instance_id, recipient=recipient, channel=channel, total_chunks=total, sizes=preview)
             else:
-                self.pending_messages.append(PendingMessage(text, recipient))
-            return -1  # Indicate failure to send
+                self.logger.info("mt_chunk_plan", instance=self.instance_id, recipient=recipient, channel=channel, total_chunks=total, sizes=[len(chunks[0].encode('utf-8')) if chunks else 0])
+        except Exception:
+            pass
+        # Enqueue job and await first chunk result
+        fut: asyncio.Future[int] = self.loop.create_future()
+        await self.outgoing_queue.put(OutgoingJob(chunks=chunks, recipient=recipient, channel=channel, result_fut=fut, attempts=0))
+        return await fut
+
+    async def process_outgoing_messages(self) -> None:
+        """Background worker: send queued chunked messages with configured delay."""
+        while True:
+            job = await self.outgoing_queue.get()
+            try:
+                # Mark sending as active for health-check gating
+                self._send_in_progress.set()
+                recipient = job.recipient
+                channel = job.channel
+                explicit_channel = channel is not None
+                if channel is None:
+                    channel = self.config.get('meshtastic.default_channel_id', 0)
+                    if not isinstance(channel, int):
+                        channel = 0
+                iface = self._require_interface()
+
+                first_id: int | None = None
+                total_chunks = len(job.chunks)
+                for idx, chunk in enumerate(job.chunks, start=1):
+                    try:
+                        if explicit_channel:
+                            result = await asyncio.to_thread(iface.sendText, chunk, destinationId=recipient, channelIndex=int(channel))  # type: ignore[attr-defined]
+                        else:
+                            result = await asyncio.to_thread(iface.sendText, chunk, destinationId=recipient)  # type: ignore[attr-defined]
+                        if first_id is None:
+                            first_id = getattr(result, 'id', None)
+                        try:
+                            self.logger.info("mt_send_success", instance=self.instance_id, recipient=recipient, channel=channel, message_id=getattr(result, 'id', None))
+                            # Check whether the suffix is present for diagnostics
+                            suffix_str = f"\nMSG {idx} of {total_chunks}"
+                            has_suffix = chunk.endswith(suffix_str)
+                            self.logger.info(
+                                "mt_send_chunk",
+                                instance=self.instance_id,
+                                chunk_index=idx,
+                                total_chunks=total_chunks,
+                                bytes=len(chunk.encode('utf-8')),
+                                has_suffix=has_suffix,
+                                text=chunk,
+                            )
+                        except Exception:
+                            pass
+                    except Exception as e:
+                        # Resolve first future on failure of first chunk
+                        try:
+                            self.logger.error(f"Error sending chunk to Meshtastic: {e=}", exc_info=True)
+                            self.logger.error("mt_send_failure", instance=self.instance_id, recipient=recipient, channel=channel, error=str(e))
+                        except Exception:
+                            pass
+                        if idx == 1 and job.result_fut is not None and not job.result_fut.done():
+                            job.result_fut.set_result(-1)
+                        # For non-size errors, schedule a full-message retry via pending_messages
+                        if "Data payload too big" in str(e):
+                            try:
+                                self.logger.error("mt_send_too_big", instance=self.instance_id, recipient=recipient, channel=channel)
+                            except Exception:
+                                pass
+                            break
+                        else:
+                            # Re-enqueue the same job with attempts+1 after retry_interval if under max_retries
+                            if job.attempts < self.max_retries:
+                                async def _requeue() -> None:
+                                    try:
+                                        await asyncio.sleep(self.retry_interval)
+                                        await self.outgoing_queue.put(OutgoingJob(
+                                            chunks=job.chunks,
+                                            recipient=recipient,
+                                            channel=job.channel,
+                                            result_fut=None,
+                                            attempts=job.attempts + 1,
+                                        ))
+                                        try:
+                                            self.logger.debug("mt_retry_scheduled", instance=self.instance_id, recipient=recipient, attempts=job.attempts + 1)
+                                        except Exception:
+                                            pass
+                                    except Exception:
+                                        pass
+                                self.loop.create_task(_requeue())
+                            else:
+                                try:
+                                    self.logger.error("mt_retry_giveup", instance=self.instance_id, recipient=recipient)
+                                except Exception:
+                                    pass
+                            break
+
+                    # Delay between chunks, except after the last one
+                    if idx < total_chunks:
+                        await asyncio.sleep(self.send_delay_seconds)
+
+                # Resolve the future once we’ve attempted the first chunk
+                if job.result_fut is not None and not job.result_fut.done():
+                    job.result_fut.set_result(first_id if isinstance(first_id, int) else -1)
+            finally:
+                self.outgoing_queue.task_done()
+                # If queue drained, clear sending flag; otherwise next loop keeps it set
+                if self.outgoing_queue.empty():
+                    self._send_in_progress.clear()
 
     def _split_utf8_bytes(self, s: str, limit: int) -> list[str]:
         """Split string into chunks not exceeding `limit` UTF-8 bytes.
@@ -317,7 +423,7 @@ class MeshtasticInterface:
         total = len(base_chunks)
         out: list[str] = []
         for idx, chunk in enumerate(base_chunks, start=1):
-            suffix = f"\nMSG {idx} of {total}"
+            suffix = f"\n\nMSG {idx} of {total}"
             # If chunk+suffix would overflow hard_limit (rare due to reserved), trim conservatively
             while len((chunk + suffix).encode('utf-8')) > hard_limit and chunk:
                 # Remove last character to stay within limit
@@ -340,27 +446,7 @@ class MeshtasticInterface:
             self.logger.error("mt_bell_error", instance=self.instance_id, dest_id=dest_id, error=str(e))
             raise
 
-    async def process_pending_messages(self) -> None:
-        """Background task: retry failed messages respecting max retries and interval."""
-        while True:
-            current_time = datetime.now()
-            for message in self.pending_messages[:]:
-                if (message.last_attempt is None or (current_time - message.last_attempt) > timedelta(seconds=self.retry_interval)):
-                    if message.attempts < self.max_retries:
-                        try:
-                            self.logger.debug("mt_retry_attempt", instance=self.instance_id, recipient=message.recipient, attempts=message.attempts)
-                            await self.send_message(message.text, message.recipient)
-                            self.pending_messages.remove(message)
-                            self.logger.info("mt_retry_success", instance=self.instance_id, recipient=message.recipient)
-                        except Exception:
-                            message.attempts += 1
-                            message.last_attempt = current_time
-                            self.logger.warning("mt_retry_failed", instance=self.instance_id, recipient=message.recipient, attempts=message.attempts)
-                    else:
-                        self.logger.warning(f"Max retries reached for message: {message.text}")
-                        self.pending_messages.remove(message)
-                        self.logger.error("mt_retry_giveup", instance=self.instance_id, recipient=message.recipient)
-            await asyncio.sleep(self.retry_interval)
+    # process_pending_messages removed; retries handled by outgoing_queue re-enqueue
 
     async def process_thread_safe_queue(self) -> None:
         """Drain thread-safe queue (from callback thread) into async queue."""
@@ -422,6 +508,8 @@ class MeshtasticInterface:
     async def reconnect(self) -> None:
         """Attempt to recreate the underlying interface."""
         self.logger.info("Attempting to reconnect to Meshtastic...")
+        # Register this reconnect attempt and check for storm conditions
+        await self._register_reconnect_attempt()
         try:
             if self.interface:
                 await asyncio.to_thread(self.interface.close)
@@ -429,6 +517,66 @@ class MeshtasticInterface:
             self.logger.info("Reconnected to Meshtastic successfully.")
         except Exception as e:
             self.logger.error(f"Failed to reconnect to Meshtastic: {e}", exc_info=True)
+
+    async def _register_reconnect_attempt(self) -> None:
+        """Record a reconnect attempt and trigger shutdown if storm threshold exceeded.
+
+        If more than 5 attempts occur within a 60-second rolling window, we call
+        the provided on_reconnect_storm callback (once) to shut the app down.
+        """
+        now = datetime.now()
+        self._reconnect_attempts.append(now)
+        # Prune entries older than 60 seconds
+        one_minute_ago = now - timedelta(seconds=60)
+        while self._reconnect_attempts and self._reconnect_attempts[0] < one_minute_ago:
+            self._reconnect_attempts.popleft()
+
+        count = len(self._reconnect_attempts)
+        try:
+            self.logger.info(
+                "mt_reconnect_attempt",
+                instance=self.instance_id,
+                attempts_last_min=count,
+            )
+        except Exception:
+            pass
+
+        if count > 5 and not self._reconnect_storm_triggered:
+            self._reconnect_storm_triggered = True
+            try:
+                self.logger.error(
+                    "mt_reconnect_storm",
+                    instance=self.instance_id,
+                    attempts_last_min=count,
+                )
+            except Exception:
+                pass
+            # Trigger app shutdown if callback provided
+            if self.on_reconnect_storm is not None:
+                try:
+                    # Call it in a task to avoid reentrancy issues
+                    async def _do_shutdown():
+                        try:
+                            self.logger.error(
+                                "shutdown_requested_by_reconnect_storm",
+                                instance=self.instance_id,
+                                attempts_last_min=count,
+                            )
+                        except Exception:
+                            pass
+                        cb = self.on_reconnect_storm
+                        if cb is not None:
+                            await cb()
+
+                    self.loop.create_task(_do_shutdown())
+                except Exception:
+                    # As a last resort, attempt direct await
+                    try:
+                        cb2 = self.on_reconnect_storm
+                        if cb2 is not None:
+                            await cb2()
+                    except Exception:
+                        pass
 
     def getNodeInfo(self):
         """Lightweight health probe: attempt to access local node ringtone."""
@@ -449,6 +597,14 @@ class MeshtasticInterface:
     async def periodic_health_check(self) -> None:
         """Continuously verify interface health and auto-reconnect if needed."""
         while True:
+            # Skip health checks while we are actively sending or have queued messages
+            if self._send_in_progress.is_set() or not self.outgoing_queue.empty():
+                try:
+                    self.logger.warning("mt_health_skip_busy", instance=self.instance_id, queue_size=self.outgoing_queue.qsize())
+                except Exception:
+                    pass
+                await asyncio.sleep(1)
+                continue
             self.logger.debug("Performing periodic health check...")
             self.logger.debug("mt_health_check", instance=self.instance_id)
             if self.interface is None:

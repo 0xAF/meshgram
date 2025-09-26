@@ -1,6 +1,8 @@
 import argparse
 import asyncio
 import sys
+import os
+import threading
 from typing import Optional, List
 from asyncio import Task
 
@@ -37,7 +39,7 @@ class Meshgram:
             raise
 
     async def _setup_meshtastic(self) -> MeshtasticInterface:
-        meshtastic = MeshtasticInterface(self.config)
+        meshtastic = MeshtasticInterface(self.config, on_reconnect_storm=self.shutdown)
         await meshtastic.setup()
         return meshtastic
 
@@ -48,6 +50,22 @@ class Meshgram:
 
     async def shutdown(self) -> None:
         """Shutdown all components and cancel running tasks."""
+        def _force_kill() -> None:
+            try:
+                self.logger.error("shutdown_forced_exit", run_id=self.run_id, after_seconds=5)
+            except Exception:
+                pass
+            os._exit(1)
+
+        try:
+            timer = threading.Timer(5.0, _force_kill)
+            timer.daemon = True  # don't keep process alive if we exit cleanly
+            timer.start()
+            self.logger.warning("shutdown_force_exit_armed", run_id=self.run_id, after_seconds=5)
+        except Exception:
+            # Best-effort; if arming fails, do nothing.
+            pass
+
         if self.is_shutting_down:
             self.logger.info("Shutdown already in progress; skipping duplicate request.")
             return
@@ -85,6 +103,10 @@ class Meshgram:
         # Structured shutdown completion event
         self.logger.info("shutdown_complete", run_id=self.run_id)
 
+        # Force-exit watchdog: if we haven't exited cleanly within 5 seconds,
+        # kill the process to avoid hanging due to stray tasks/threads.
+        
+
     async def run(self) -> None:
         """Run the main application loop."""
         try:
@@ -97,7 +119,7 @@ class Meshgram:
         self.tasks = [
             asyncio.create_task(self.message_processor.process_messages()),
             asyncio.create_task(self.meshtastic.process_thread_safe_queue()),
-            asyncio.create_task(self.meshtastic.process_pending_messages()),
+            asyncio.create_task(self.meshtastic.process_outgoing_messages()),
             asyncio.create_task(self.telegram.start_polling()),
             asyncio.create_task(self.meshtastic.periodic_health_check()),
             asyncio.create_task(self.meshtastic.periodic_telemetry_report()),

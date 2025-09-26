@@ -3,7 +3,6 @@ from __future__ import annotations
 # pyright: reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnknownVariableType=false, reportUnknownParameterType=false, reportAny=false
 
 import asyncio
-from operator import is_
 import signal
 from importlib import import_module
 from typing import TypedDict, Literal, Protocol, NotRequired, cast, Any, Dict
@@ -103,10 +102,9 @@ class MessageProcessor:
         # AI feature flags (aim / ait) + config
         self.ai_enabled_mesh: bool = config.get('meshtastic.ai_enabled', config.get('meshtastic.ai_mesh_enabled', False))
         self.ai_enabled_telegram: bool = config.get('telegram.ai_enabled', config.get('telegram.ai_telegram_enabled', False))
-        self.ai_base_url: str = config.get('ai.base_url', 'http://localhost:11434')
-        self.ai_default_model: str = config.get('ai.model', 'llama3')
+        # Provider-specific AI config only; global ai.base_url/ai.model removed
         self.ai_system_prompt: str = config.get('ai.system_prompt', 'You are a helpful assistant for a Meshtastic ↔ Telegram bridge.')
-        self._ollama_client: Any | None = None
+        self._ai_client: Any | None = None
 
         # Message persistence DB (direct sqlite3)
         self._msgdb: sqlite3.Connection | None = None
@@ -299,22 +297,61 @@ class MessageProcessor:
         self.logger.info("processor_stop_complete", instance=self.instance_id)
 
     # --- AI Helpers ---
-    async def _get_ollama(self):
-        if self._ollama_client is None:
+    async def _get_ai_client(self):
+        if self._ai_client is None:
             try:
-                mod = import_module('ollama_client')
-                OllamaClient = getattr(mod, 'OllamaClient')
-                self._ollama_client = OllamaClient(base_url=self.ai_base_url, model=self.ai_default_model)
+                provider = str(self.config.get('ai.provider', 'ollama')).strip().lower()
+                env_script = self.config.get('telemetry.environment_script', None)
+                strip_default = bool(self.config.get('ai.strip_thinking', True))
+                if provider == 'openai':
+                    mod = import_module('openai_client')
+                    Client = getattr(mod, 'OpenAIClient')
+                    base_url = self.config.get('ai.openai.base_url', 'https://api.openai.com/v1')
+                    model = self.config.get('ai.openai.model', 'gpt-4o-mini')
+                    api_key = self.config.get('ai.openai.api_key', "")
+                    self._ai_client = Client(
+                        base_url=base_url,
+                        model=model,
+                        api_key=api_key,
+                        environment_script=env_script,
+                        enable_thinking_default=bool(self.config.get('ai.enable_thinking', False)),
+                        strip_thinking_default=strip_default,
+                    )
+                else:
+                    mod = import_module('ollama_client')
+                    Client = getattr(mod, 'OllamaClient')
+                    base_url = self.config.get('ai.ollama.base_url', 'http://127.0.0.1:11434')
+                    model = self.config.get('ai.ollama.model', 'llama3')
+                    self._ai_client = Client(
+                        base_url=base_url,
+                        model=model,
+                        environment_script=env_script,
+                        enable_thinking_default=bool(self.config.get('ai.enable_thinking', False)),
+                        strip_thinking_default=strip_default,
+                    )
             except Exception as e:
-                self.logger.error(f"Failed to init Ollama client: {e}")
+                self.logger.error(f"Failed to init AI client: {e}")
                 return None
-        return self._ollama_client
+        return self._ai_client
 
-    async def _ollama_chat(self, prompt: str, conversation_id: str | None = None) -> str:
-        client = await self._get_ollama()
+    async def _ai_chat(self, prompt: str, conversation_id: str | None = None) -> str:
+        client = await self._get_ai_client()
         if not client:
             return "[AI unavailable]"
-        return await client.chat(prompt, system=self.ai_system_prompt, keep_history=True, conversation_id=conversation_id or 'global')
+        enable_tools = self.config.get('ai.enable_tools', False)
+        enable_thinking = bool(self.config.get('ai.enable_thinking', False))
+        strip = bool(self.config.get('ai.strip_thinking', False))
+        chat_kwargs = {
+            "prompt": prompt,
+            "system": self.ai_system_prompt,
+            "keep_history": True,
+            "conversation_id": conversation_id or 'global',
+            "enable_tools": enable_tools,
+            "strip_thinking": strip,
+        }
+        if enable_thinking:
+            chat_kwargs["enable_thinking"] = True
+        return await client.chat(**chat_kwargs)
 
     def _split_mesh(self, text: str) -> list[str]:
         """Split text into chunks of at most 200 UTF-8 bytes.
@@ -515,7 +552,7 @@ class MessageProcessor:
         ai_triggers = ["ai", "bot", "аи", "ии", "бот"]
         if channel_num not in receive_only_channels:
             for trigger in ai_triggers:
-                for sep in ("", ":", ","):
+                for sep in (":", ",", ""):
                     prefix = f"{trigger}{sep}"
                     if isinstance(text, str) and text.lower().startswith(prefix):
                         # Replace only at the start
@@ -691,7 +728,7 @@ class MessageProcessor:
             ai_triggers = ["ai", "bot", "аи", "ии", "бот"]
             matched = False
             for trig in ai_triggers:
-                for sep in ("", ":", ","):
+                for sep in (":", ",", ""):
                     prefix = f"{trig}{sep}"
                     if text_l.lower().startswith(prefix):
                         prompt = text_l[len(prefix):].lstrip()
@@ -709,7 +746,7 @@ class MessageProcessor:
                     await self.telegram.send_message("Usage: /ai <prompt>", topic=str(thread_id) if thread_id is not None else "default")
                     return
                 conv_id = str(user_id) if user_id is not None else 'global'
-                reply = await self._ollama_chat(prompt, conversation_id=conv_id)
+                reply = await self._ai_chat(prompt, conversation_id=conv_id)
                 # Reply to the triggering message if we have its id
                 reply_to = message.get('message_id') if isinstance(message.get('message_id'), int) else None
                 await self.telegram.send_message(
@@ -846,11 +883,11 @@ class MessageProcessor:
                 return
             prompt = " ".join(args)
             conv_id = str(user_id) if user_id is not None else 'global'
-            response = await self._ollama_chat(prompt, conversation_id=conv_id)
+            response = await self._ai_chat(prompt, conversation_id=conv_id)
             await _reply(response[:3500])
             return
         if command == 'aireset':
-            client = await self._get_ollama()
+            client = await self._get_ai_client()
             if client:
                 conv_id = str(user_id) if user_id is not None else 'global'
                 client.reset(conv_id)
@@ -1097,23 +1134,23 @@ class MessageProcessor:
             pass
         if not conv_id:
             conv_id = sender
-        reply_full = await self._ollama_chat(prompt, conv_id)
-        chunks = self._split_mesh(reply_full)
+        reply_full = await self._ai_chat(prompt, conv_id)
         send_to = sender
         if recipient == "^all":
             send_to = "^all"
         else:
             channel_num = 0
         # if reply_directly:
-            # send_to = sender
-            # channel_num = 0
-        for c in chunks:
-            try:
-                _ = await self.meshtastic.send_message(c, send_to, channel=channel_num)
-            except Exception:
-                break
-        # Provide first line as the text to show in Telegram log
-        return f"{from_short} → {' '.join(chunks)}"
+        #     send_to = sender
+        #     channel_num = 0
+        # Important: do NOT pre-split here. Let MeshtasticInterface handle chunking
+        # so it can append "MSG i of N" suffixes consistently across the whole message.
+        try:
+            _ = await self.meshtastic.send_message(reply_full, send_to, channel=channel_num)
+        except Exception:
+            pass
+        # Provide the full reply for logging/confirmation
+        return f"{from_short} → {reply_full}"
 
     async def handle_mesh_cmd_aireset(self, *, sender: str, recipient: str, channel_num: int, hops_start: int, hops_limit: int, hops_away: int, mqtt: bool, rssi: Any, snr: Any, bridge_id: int, args: list[str], from_short: str, to_short: str, signal_emoji: str, signal_label: str, reply_directly: bool = False) -> str:
         """Reset AI conversation history for this mesh node."""
@@ -1121,7 +1158,7 @@ class MessageProcessor:
             return f"{from_short} → ai command not enabled"
         if not self.ai_enabled_mesh:
             return f"{from_short} → mesh AI disabled (aim)"
-        client = await self._get_ollama()
+        client = await self._get_ai_client()
         if not client:
             return f"{from_short} → AI unavailable"
         node = self.node_manager.nodes.get(sender) if hasattr(self.node_manager, 'nodes') else None
@@ -1143,7 +1180,8 @@ class MessageProcessor:
         else:
             channel_num = 0
         if reply_directly:
-            send_to = sender; channel_num = 0
+            send_to = sender
+            channel_num = 0
         try:
             meshtastic_message_id = await self.meshtastic.send_message(reply_text, send_to, channel=channel_num)
             self.pending_acks[meshtastic_message_id] = {

@@ -1,4 +1,6 @@
 import pytest
+import asyncio
+from contextlib import suppress
 from unittest.mock import AsyncMock, MagicMock
 from meshtastic_interface import MeshtasticInterface
 from config_manager import ConfigManager
@@ -24,11 +26,26 @@ async def test_meshtastic_interface_setup(mock_config):
 @pytest.mark.asyncio
 async def test_meshtastic_interface_send_message(mock_config):
     interface = MeshtasticInterface(mock_config)
-    interface.interface = MagicMock()
-    interface.interface.sendText = AsyncMock()
 
-    await interface.send_message("Test message", "!4e19d9a4")
+    # Provide a stub sync interface since production uses asyncio.to_thread
+    class StubResult:
+        def __init__(self, id: int) -> None:
+            self.id = id
 
-    interface.interface.sendText.assert_called_once_with("Test message", destinationId="!4e19d9a4")
+    class StubInterface:
+        def sendText(self, text: str, destinationId: str, channelIndex: int | None = None):
+            return StubResult(123)
+
+    interface.interface = StubInterface()
+
+    # Start the outgoing worker
+    worker = asyncio.create_task(interface.process_outgoing_messages())
+    try:
+        mid = await interface.send_message("Test message", "!4e19d9a4")
+        assert mid == 123
+    finally:
+        worker.cancel()
+        with suppress(asyncio.CancelledError):
+            await worker
 
 # Add more tests for other methods...

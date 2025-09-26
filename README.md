@@ -230,33 +230,75 @@ pytest -q
 
 Happy meshing! 🎉
 
-## 🤖 AI (Ollama) Integration
+## 🤖 AI Integration (Ollama or OpenAI)
 
-Meshgram can connect to a local [Ollama](https://ollama.com) server to provide AI chat responses:
+Meshgram can use a local [Ollama](https://ollama.com) server or any OpenAI-compatible API for AI chat responses. Both Telegram and Mesh can talk to the AI when enabled.
 
-1. Install and run Ollama locally (ensure the model is pulled, e.g. `ollama pull llama3`).
-2. Enable features:
-   - In config: set `telegram.ai_enabled: true` (feature key `ait`) to allow `/ai` in Telegram.
-   - Set `meshtastic.ai_enabled: true` (feature key `aim`) plus `meshtastic.commands.ai: true` for mesh `/ai`.
-3. Configure AI section:
+### Enable the features
+
+- Telegram: set `telegram.ai_enabled: true` to allow `/ai` in Telegram (feature key `ait`).
+- Mesh: set `meshtastic.ai_enabled: true` and `meshtastic.commands.ai: true` for mesh `/ai` (feature key `aim`).
+
+### Choose a provider and configure
+
+In `config/config.yaml` under `ai:` choose a provider and fill in details:
 
 ```yaml
 ai:
-  base_url: "http://127.0.0.1:11434"
-  model: "gemma3"
+  # 'ollama' for local server, or 'openai' for OpenAI-compatible endpoints
+  provider: ollama
+
+  # Common toggles
+  enable_tools: true       # enable function-calling tools
+  enable_thinking: false   # request chain-of-thought tokens (Ollama-only)
+  strip_thinking: true     # hide visible “thinking/reasoning” text in final replies
+  model: "llama3.1"        # default model if per-provider override is absent
   system_prompt: |
-    You are a helpful assistant running on Meshtastic <-> Telegram bridge. Keep answers concise.
-    You speak only in Bulgarian, unless the user specifically asks you to respond in English.
-    If the user asks you to translate something, you can do so, but only if it is a short phrase or sentence. Do not translate long texts or documents.
-    If the user asks you to write code, you can do so, but only if it is a short snippet. Do not write long programs or scripts.
-    If the user asks you to generate text, you can do so, but only if it is a short paragraph or two. Do not generate long articles or essays.
-    Always be funny and picky.
-    Always answer short and concise.
+    You are a helpful assistant running on a Meshtastic <-> Telegram bridge. Keep answers concise...
+
+  # OpenAI-compatible settings (used when provider=openai)
+  openai:
+    base_url: "https://api.openai.com/v1"
+    model: "gpt-4o-mini"
+    # api_key: "${OPENAI_API_KEY}"
+
+  # Ollama settings (used when provider=ollama)
+  ollama:
+    base_url: "http://127.0.0.1:11434"
+    model: "llama3.1"
 ```
 
-Per-user / per-node context & resets:
+Notes:
 
-- Telegram: conversation history is keyed by the Telegram user id. Use `/aireset` to clear your own history.
-- Mesh: history is keyed by the sender shortName (fallback raw node id). Use `/aireset` on the mesh (if `meshtastic.commands.ai` and `aim` enabled) to reset that node's context.
+- Tools: If your server rejects tool calls (older Ollama versions or models withouth tools support), Meshgram automatically retries without tools.
+- Thinking: We never expose chain-of-thought. Set `ai.strip_thinking: true` to filter any “thinking” blocks returned by some models. `ai.enable_thinking` controls sending the Ollama-specific `think` flag.
+- Telegram replies: The bot replies to the triggering message when answering `/ai` in Telegram for better threading.
+
+### Built-in tool: Local Weather
+
+When `ai.enable_tools: true`, the AI can call a simple weather tool that runs your script and summarizes the result. Configure the script under `telemetry`:
+
+```yaml
+telemetry:
+  environment_enabled: false
+  environment_script: "./ha.sh"   # this script is executed by the tool
+  environment_send_interval: 300
+```
+
+The script should print simple key: value lines, for example:
+
+```text
+temperature_c: 22.4
+humidity: 56
+wind_kmh: 14
+condition: clear
+```
+
+The tool parses these into structured data and returns a short summary to the model. You can request the weather naturally in chat; the model decides when to call the tool. If the model asks for Fahrenheit or m/s, the client converts basic units where possible.
+
+### Conversation history and resets
+
+- Telegram: history is keyed by Telegram user id. Use `/aireset` to clear your own history.
+- Mesh: history is keyed by the sender’s shortName (fallback raw node id). Use `/aireset` on the mesh to reset that node’s context (requires `meshtastic.commands.ai: true` and `meshtastic.ai_enabled: true`).
 
 Restarting the service clears all histories globally.

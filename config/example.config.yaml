@@ -2,7 +2,8 @@
 # Example configuration for Meshgram
 #
 # Copy this file to config/config.yaml and adjust values for your setup.
-# Env vars like ${TELEGRAM_BOT_TOKEN} are supported (via EnvYAML). Consider using direnv: https://direnv.net/
+# Environment variables like ${TELEGRAM_BOT_TOKEN} and ${OPENAI_API_KEY}
+# are supported via EnvYAML. Consider using direnv: https://direnv.net/
 
 telegram:
   # Bot token from @BotFather (https://core.telegram.org/bots/tutorial)
@@ -18,8 +19,8 @@ telegram:
   use_topics: false
   # Preserve incoming Markdown V2 formatting by default (set to false to always auto-escape)
   raw_markdown: false
-  # Enable AI (Ollama) responses via Telegram command /ai
-  ai_enabled: false  # renamed feature key 'ait'
+  # Enable AI responses via Telegram command /ai (feature key 'ait')
+  ai_enabled: false
 
 meshtastic:
   # How to connect to your Meshtastic node: 'serial' or 'tcp'
@@ -35,22 +36,25 @@ meshtastic:
   default_node_id: "^all"
   # Default mesh channel index for outbound messages (0..N)
   default_channel_id: 0
+  # Delay between sending message chunks (milliseconds)
+  send_delay_ms: 200
   # Channels to ignore (do not forward to Telegram and do not respond)
-  # ignored_channels: [1, 2]
-  receive_only_channels: []  # channels to receive only (forwarding to Telegram, but do not respond in channels)
+  ignored_channels: []
+  # Channels to receive-only (forward to Telegram but do not respond in those channels)
+  receive_only_channels: []
 
   admin_nodes:
     - '1b8c7774' # node id of an admin node that can use /admin command
 
   commands:
-    ping: True # /ping command to get your hop count and node id back
-    help: True # /help command
-    ai: False  # enable /ai mesh command (feature key 'aim')
-    travel: True  # enable /travel safety reminder command
+    ping: true   # /ping command to get your hop count and node id back
+    help: true   # /help command
+    ai: false    # enable /ai mesh command (feature key 'aim')
+    travel: true # enable /travel safety reminder command
   
-  reply_directly: false # if true, /ping and /help replies go directly to the sender instead of the channel
-  # Feature flag for AI replies originating from the mesh (/ai)
-  ai_enabled: false  # feature key 'aim'
+  reply_directly: false # if true, replies go directly to the sender instead of the channel
+  # Master mesh AI feature flag (aim)
+  ai_enabled: false
 
   # Link template to a node info page; {node_id} is replaced with the numeric id
   node_info_link: "https://meshmap.net/{node_id}"
@@ -98,19 +102,33 @@ logging:
   syslog_port: 514
   syslog_protocol: "udp"  # udp or tcp
 
-# AI configuration (local Ollama model)
+# AI configuration (select provider + options)
 ai:
-  # Base URL of the local Ollama server
-  base_url: "http://127.0.0.1:11434"
-  # Default model name to use
-  model: "llama3"
-  # Optional system prompt to steer behavior
+  # Which backend to use: 'ollama' (local) or 'openai' (OpenAI-compatible)
+  provider: ollama
+
+  # Common options
+  enable_tools: true       # allow model to call tools (function calling)
+  enable_thinking: false   # request chain-of-thought tokens (Ollama only)
+  strip_thinking: true     # strip visible "thinking/reasoning" blocks from final reply
   system_prompt: |
-    You are a helpful assistant running on Meshtastic <-> Telegram bridge. Keep answers concise.
+    You are a helpful assistant running on a Meshtastic <-> Telegram bridge. Keep answers concise.
     You speak only in Bulgarian, unless the user specifically asks you to respond in English.
     If the user asks you to translate something, you can do so, but only if it is a short phrase or sentence. Do not translate long texts or documents.
     If the user asks you to write code, you can do so, but only if it is a short snippet. Do not write long programs or scripts.
     If the user asks you to generate text, you can do so, but only if it is a short paragraph or two. Do not generate long articles or essays.
     Always be funny and picky.
     Always answer short and concise.
+    You may use tools to answer questions; only call tools when necessary.
+
+  # OpenAI-compatible settings (used when provider=openai)
+  openai:
+    base_url: "https://api.openai.com/v1"
+    model: "gpt-4o-mini"
+    api_key: "${OPENAI_API_KEY}"
+
+  # Ollama-specific settings (used when provider=ollama)
+  ollama:
+    base_url: "http://127.0.0.1:11434"
+    model: "llama3.1"
 
