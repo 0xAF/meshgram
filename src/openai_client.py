@@ -60,11 +60,19 @@ class OpenAIClient:
 
     async def _ensure_client(self) -> httpx.AsyncClient:
         if self._client is None:
-            headers: Dict[str, str] = {}
+            headers: Dict[str, str] = {
+                "Content-Type": "application/json",
+            }
             if self.api_key:
                 headers["Authorization"] = f"Bearer {self.api_key}"
             self._client = httpx.AsyncClient(timeout=self.timeout, headers=headers)
-            self.logger.info("openai_http_client_created", timeout=self.timeout, instance=self.instance_id)
+            self.logger.info(
+                "openai_http_client_created",
+                timeout=self.timeout,
+                has_auth=bool(self.api_key),
+                content_type=headers.get("Content-Type"),
+                instance=self.instance_id,
+            )
         return self._client
 
     def set_model(self, model: str) -> None:

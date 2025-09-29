@@ -113,7 +113,7 @@ ai:
   provider: ollama
 
   # Common options
-  enable_tools: true       # allow model to call tools (function calling)
+  enable_tools: false       # allow model to call tools (function calling)
   enable_thinking: false   # request chain-of-thought tokens (Ollama only)
   strip_thinking: true     # strip visible "thinking/reasoning" blocks from final reply
   system_prompt: |
@@ -130,7 +130,12 @@ ai:
   openai:
     base_url: "https://api.openai.com/v1"
     model: "gpt-4o-mini"
-    api_key: "${OPENAI_API_KEY}"
+    # API key for Authorization: Bearer <key> header (required for api.openai.com or CloudFlare API_TOKEN)
+    # api_key: "${OPENAI_API_KEY}"
+    # CloudFlare example:
+    # base_url: "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/ai/v1" # cloudflare
+    # model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+    # api_key: "${CLOUDFLARE_API_TOKEN}"
 
   # Ollama-specific settings (used when provider=ollama)
   ollama:

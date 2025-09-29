@@ -432,7 +432,7 @@ class MeshtasticInterface:
     def _split_utf8_bytes_reserve_suffix(self, s: str, hard_limit: int, *, prefix: str = "") -> list[str]:
         """Split `s` into UTF-8 chunks so that `chunk + suffix` fits `hard_limit`.
 
-        The suffix format is "\nMSG i of N". Since N is unknown up front, we do a
+        The suffix format is " [MSG i of N]". Since N is unknown up front, we do a
         two-pass approach:
         1) First, split optimistically with a conservative reserved budget
            large enough for worst-case digits (assume up to 9999 chunks).
@@ -445,8 +445,8 @@ class MeshtasticInterface:
         # Normalized sizes
         prefix_b = prefix.encode('utf-8') if prefix else b""
         prefix_len = len(prefix_b)
-        # Worst-case suffix when N <= 9999: "\nMSG 9999 of 9999" -> 17 bytes (ASCII)
-        reserved_suffix = 17
+        # Worst-case suffix when N <= 9999: " [MSG 9999 of 9999]" -> 19 bytes (ASCII)
+        reserved_suffix = 19
         limit = max(1, hard_limit - reserved_suffix - prefix_len)
 
         # If it fits in one without suffix, return single prefixed chunk
@@ -459,7 +459,7 @@ class MeshtasticInterface:
         total = len(base_chunks)
         out: list[str] = []
         for idx, chunk in enumerate(base_chunks, start=1):
-            suffix = f"\nMSG {idx} of {total}"
+            suffix = f" [MSG {idx} of {total}]"
             # Trim if prefix + chunk + suffix would overflow
             while len((prefix + chunk + suffix).encode('utf-8')) > hard_limit and chunk:
                 chunk = chunk[:-1]

@@ -52,16 +52,16 @@ class Meshgram:
         """Shutdown all components and cancel running tasks."""
         def _force_kill() -> None:
             try:
-                self.logger.error("shutdown_forced_exit", run_id=self.run_id, after_seconds=5)
+                self.logger.error("shutdown_forced_exit", run_id=self.run_id, after_seconds=3)
             except Exception:
                 pass
             os._exit(1)
 
         try:
-            timer = threading.Timer(5.0, _force_kill)
+            timer = threading.Timer(3.0, _force_kill)
             timer.daemon = True  # don't keep process alive if we exit cleanly
             timer.start()
-            self.logger.warning("shutdown_force_exit_armed", run_id=self.run_id, after_seconds=5)
+            self.logger.warning("shutdown_force_exit_armed", run_id=self.run_id, after_seconds=3)
         except Exception:
             # Best-effort; if arming fails, do nothing.
             pass
