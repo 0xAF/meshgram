@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, Any, Optional, List, Union, TypedDict
+from typing import Dict, Any, Optional, List, Union, TypedDict, Tuple
 from datetime import datetime, timedelta
 from telegram.helpers import escape_markdown
 import json
@@ -43,6 +43,11 @@ class NodeManager:
         )
         self.history_limit: int = 100
         self.migrate_nodes_from_old_cache()
+        # Expose a module-global pointer for logging enrichment utilities
+        try:
+            set_global_node_manager(self)
+        except Exception:
+            pass
 
     # --- Migration ---
     def migrate_nodes_from_old_cache(self):
@@ -295,3 +300,37 @@ class NodeManager:
             return " ".join(parts)
         except Exception:
             return str(seconds)
+
+# --- Global access for logging enrichment ---
+_GLOBAL_NODE_MANAGER: Optional[NodeManager] = None
+
+def set_global_node_manager(nm: NodeManager) -> None:
+    global _GLOBAL_NODE_MANAGER
+    _GLOBAL_NODE_MANAGER = nm
+
+def get_global_node_names(node_id: Any) -> Tuple[Optional[str], Optional[str]]:
+    """Lookup short and long names for a node id using the global NodeManager.
+
+    Returns (shortName, longName) or (None, None) if unknown/unavailable.
+    Accepts either '!abcdef12' style or bare hex ids; lookup is performed as-is,
+    with a fallback stripping a leading '!'.
+    """
+    try:
+        nid = str(node_id) if node_id is not None else ""
+    except Exception:
+        return (None, None)
+    if not nid:
+        return (None, None)
+    nm = _GLOBAL_NODE_MANAGER
+    if nm is None:
+        return (None, None)
+    node = nm.nodes.get(nid) or (nm.nodes.get(nid[1:]) if nid.startswith('!') else None)
+    if not node:
+        return (None, None)
+    sn = node.get('shortName')  # type: ignore[index]
+    ln = node.get('longName')   # type: ignore[index]
+    def _clean(v: Any) -> Optional[str]:
+        if isinstance(v, str) and v.strip() and v.strip().lower() != 'unknown':
+            return v.strip()
+        return None
+    return (_clean(sn), _clean(ln))

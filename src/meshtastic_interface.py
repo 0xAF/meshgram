@@ -204,12 +204,26 @@ class MeshtasticInterface:
             f"Message details - {packet.get('fromId')=}, {packet.get('toId')=}, {packet.get('decoded', {}).get('portnum')=}"
         )
         try:
+            from_id = str(packet.get('fromId', '') or '')
+            to_id = str(packet.get('toId', '') or '')
+            try:
+                f_node = self.node_manager.get_node(from_id)
+                from_sn = f_node.get('shortName') if f_node else None
+                from_ln = f_node.get('longName') if f_node else None
+            except Exception:
+                from_sn = from_ln = None
+            try:
+                t_node = self.node_manager.get_node(to_id)
+                to_sn = t_node.get('shortName') if t_node else None
+                to_ln = t_node.get('longName') if t_node else None
+            except Exception:
+                to_sn = to_ln = None
             portnum = packet.get('decoded', {}).get('portnum')
             self.logger.debug(
                 "packet_rx",
                 instance=self.instance_id,
-                from_id=str(packet.get('fromId', '')),
-                to_id=str(packet.get('toId', '')),
+                from_id=from_id, from_sn=from_sn, from_ln=from_ln,
+                to_id=to_id, to_sn=to_sn, to_ln=to_ln,
                 portnum=str(portnum),
                 is_ack=packet.get('decoded', {}).get('portnum') == 'ROUTING_APP'
             )
@@ -223,11 +237,25 @@ class MeshtasticInterface:
     def handle_ack(self, packet: dict[str, object]) -> None:
         """Convert ACK packets into simplified dicts and enqueue them in the async queue."""
         try:
+            from_id = str(packet.get('fromId', '') or '')
+            to_id = str(packet.get('toId', '') or '')
+            try:
+                f_node = self.node_manager.get_node(from_id)
+                from_sn = f_node.get('shortName') if f_node else None
+                from_ln = f_node.get('longName') if f_node else None
+            except Exception:
+                from_sn = from_ln = None
+            try:
+                t_node = self.node_manager.get_node(to_id)
+                to_sn = t_node.get('shortName') if t_node else None
+                to_ln = t_node.get('longName') if t_node else None
+            except Exception:
+                to_sn = to_ln = None
             self.logger.debug(
                 "mt_ack_rx",
                 instance=self.instance_id,
-                from_id=str(packet.get('fromId', '')),
-                to_id=str(packet.get('toId', '')),
+                from_id=from_id, from_sn=from_sn, from_ln=from_ln,
+                to_id=to_id, to_sn=to_sn, to_ln=to_ln,
                 message_id=str(packet.get('id', '')),
                 request_id=str(packet.get('decoded', {}).get('requestId', ''))
             )
@@ -272,7 +300,13 @@ class MeshtasticInterface:
             raise ValueError("Text and recipient must not be empty")
         # Log based on bytes for accuracy
         try:
-            self.logger.info("mt_send_attempt", instance=self.instance_id, recipient=recipient, channel=channel, size=len(text.encode('utf-8')))
+            try:
+                _n = self.node_manager.get_node(recipient)
+                _rsn = _n.get('shortName') if _n else None
+                _rln = _n.get('longName') if _n else None
+            except Exception:
+                _rsn = _rln = None
+            self.logger.info("mt_send_attempt", instance=self.instance_id, recipient=recipient, recipient_sn=_rsn, recipient_ln=_rln, channel=channel, size=len(text.encode('utf-8')))
         except Exception:
             pass
 
@@ -321,7 +355,13 @@ class MeshtasticInterface:
                         if first_id is None:
                             first_id = getattr(result, 'id', None)
                         try:
-                            self.logger.info("mt_send_success", instance=self.instance_id, recipient=recipient, channel=channel, message_id=getattr(result, 'id', None))
+                            try:
+                                _n = self.node_manager.get_node(recipient)
+                                _rsn = _n.get('shortName') if _n else None
+                                _rln = _n.get('longName') if _n else None
+                            except Exception:
+                                _rsn = _rln = None
+                            self.logger.info("mt_send_success", instance=self.instance_id, recipient=recipient, recipient_sn=_rsn, recipient_ln=_rln, channel=channel, message_id=getattr(result, 'id', None))
                             # Check whether the suffix is present for diagnostics
                             # Suffix detection tolerant to truncated totals
                             has_suffix = "\nMSG " in chunk
@@ -340,7 +380,13 @@ class MeshtasticInterface:
                         # Resolve first future on failure of first chunk
                         try:
                             self.logger.error(f"Error sending chunk to Meshtastic: {e=}", exc_info=True)
-                            self.logger.error("mt_send_failure", instance=self.instance_id, recipient=recipient, channel=channel, error=str(e))
+                            try:
+                                _n = self.node_manager.get_node(recipient)
+                                _rsn = _n.get('shortName') if _n else None
+                                _rln = _n.get('longName') if _n else None
+                            except Exception:
+                                _rsn = _rln = None
+                            self.logger.error("mt_send_failure", instance=self.instance_id, recipient=recipient, recipient_sn=_rsn, recipient_ln=_rln, channel=channel, error=str(e))
                         except Exception:
                             pass
                         if idx == 1 and job.result_fut is not None and not job.result_fut.done():

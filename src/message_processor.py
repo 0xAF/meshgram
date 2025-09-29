@@ -146,6 +146,11 @@ class MessageProcessor:
             try:
                 # Dynamic packet from queue (library provides dict); keep loose typing
                 message = await self.meshtastic.message_queue.get()  # type: ignore[assignment]
+                # Defaults for enrichment fields in logs to avoid UnboundLocalError
+                from_short_name = None
+                from_long_name = None
+                to_short_name = None
+                to_long_name = None
                 # Suppress noisy health-check ringtone responses
                 _is_ringtone = (
                     message.get('decoded', {}).get('portnum') == 'ADMIN_APP' and
@@ -155,10 +160,6 @@ class MessageProcessor:
                     # Include cached shortName and longName if available
                     from_id = message.get('fromId')
                     to_id = message.get('toId')
-                    from_short_name = None
-                    from_long_name = None
-                    to_short_name = None
-                    to_long_name = None
                     try:
                         if isinstance(from_id, str):
                             node = self.node_manager.nodes.get(from_id)
@@ -208,7 +209,14 @@ class MessageProcessor:
                         message_id=message.get('id')
                     )
                 # dynamic packet dict access
-                self.logger.debug("mt_message_rx", instance=self.instance_id, portnum=message.get('decoded', {}).get('portnum'), from_id=message.get('fromId'))  # type: ignore[arg-type]
+                self.logger.debug(
+                    "mt_message_rx",
+                    instance=self.instance_id,
+                    portnum=message.get('decoded', {}).get('portnum'),
+                    from_id=message.get('fromId'),
+                    from_sn=from_short_name,
+                    from_ln=from_long_name,
+                )  # type: ignore[arg-type]
                 match message.get('type'):
                     case 'ack':
                         _ = await self.handle_ack(message)
@@ -457,7 +465,32 @@ class MessageProcessor:
 
     async def handle_text_message_app(self, packet: dict[str, object]) -> None:  # type: ignore[override]
         """Format and forward a Meshtastic text message to Telegram (enriched logging)."""
-        self.logger.info( "mt_handle_text", from_id=packet.get('fromId'), to_id=packet.get('toId'), channel=packet.get('channel'), text=packet.get('decoded', {}).get('payload'))
+        try:
+            _fid = packet.get('fromId')
+            _tid = packet.get('toId')
+            _fsn = _fln = _tsn = _tln = None
+            try:
+                if isinstance(_fid, str):
+                    _n = self.node_manager.nodes.get(_fid)
+                    if _n:
+                        _fsn = _n.get('shortName')
+                        _fln = _n.get('longName')
+                if isinstance(_tid, str):
+                    _n = self.node_manager.nodes.get(_tid)
+                    if _n:
+                        _tsn = _n.get('shortName')
+                        _tln = _n.get('longName')
+            except Exception:
+                pass
+            self.logger.info(
+                "mt_handle_text",
+                from_id=_fid, from_short=_fsn, from_long=_fln,
+                to_id=_tid, to_short=_tsn, to_long=_tln,
+                channel=packet.get('channel'),
+                text=packet.get('decoded', {}).get('payload'),
+            )
+        except Exception:
+            self.logger.info( "mt_handle_text", from_id=packet.get('fromId'), to_id=packet.get('toId'), channel=packet.get('channel'), text=packet.get('decoded', {}).get('payload'))
         bridge_id = new_id()
         sender = str(packet.get('fromId', 'unknown'))
         recipient = str(packet.get('toId', 'unknown'))
@@ -1086,7 +1119,19 @@ class MessageProcessor:
             f"{cmds_admin}",
         ]
         help_text = "\n".join(lines)
-        self.logger.info("help_command_rx", instance=self.instance_id, bridge_id=bridge_id, sender=sender, recipient=recipient, from_short=from_short, to_short=to_short, channel=channel_num)
+        # help_command_rx: include long names if available
+        from_ln = None
+        to_ln = None
+        try:
+            n = self.node_manager.nodes.get(sender)
+            if n:
+                from_ln = n.get('longName')
+            n = self.node_manager.nodes.get(recipient)
+            if n:
+                to_ln = n.get('longName')
+        except Exception:
+            pass
+        self.logger.info("help_command_rx", instance=self.instance_id, bridge_id=bridge_id, sender=sender, recipient=recipient, from_short=from_short, from_long=from_ln, to_short=to_short, to_long=to_ln, channel=channel_num)
 
         send_to = sender
         if recipient == "^all":
@@ -1200,7 +1245,19 @@ class MessageProcessor:
         if not self.config.get('meshtastic.commands.travel', True):
             return f"{from_short} → travel not enabled"
         reply_text = "This is Varna, Bulgaria. Be safe."
-        self.logger.info("travel_command_rx", instance=self.instance_id, bridge_id=bridge_id, sender=sender, recipient=recipient, from_short=from_short, to_short=to_short, channel=channel_num)
+        # travel_command_rx: include long names if available
+        from_ln = None
+        to_ln = None
+        try:
+            n = self.node_manager.nodes.get(sender)
+            if n:
+                from_ln = n.get('longName')
+            n = self.node_manager.nodes.get(recipient)
+            if n:
+                to_ln = n.get('longName')
+        except Exception:
+            pass
+        self.logger.info("travel_command_rx", instance=self.instance_id, bridge_id=bridge_id, sender=sender, recipient=recipient, from_short=from_short, from_long=from_ln, to_short=to_short, to_long=to_ln, channel=channel_num)
         send_to = sender
         if recipient == "^all":
             send_to = "^all"
@@ -1302,7 +1359,16 @@ class MessageProcessor:
         if self.reports.get('nodes', True):
             info_text: str = self.node_manager.format_node_info(node_id)
             await self.telegram.send_or_edit_message('nodeinfo', node_id, info_text)
-        self.logger.info("mt_nodeinfo_handle", from_id=raw_id, short_name=node_info.get('user', {}).get('shortName'), long_name=node_info.get('user', {}).get('longName'))
+        try:
+            _user = node_info.get('user', {}) if isinstance(node_info, dict) else {}
+        except Exception:
+            _user = {}
+        self.logger.info(
+            "mt_nodeinfo_handle",
+            from_id=raw_id,
+            short_name=_user.get('shortName'),
+            long_name=_user.get('longName'),
+        )
 
     async def handle_position_app(self, packet: Dict[str, Any]) -> None:
         raw_id = packet.get('fromId')
@@ -1328,7 +1394,13 @@ class MessageProcessor:
                     )
                 except Exception as e:
                     self.logger.debug(f"Failed to send raw location map: {e}")
-        self.logger.info("mt_position_handle", from_id=raw_id, latitude=latitude, longitude=longitude)
+        try:
+            _n = self.node_manager.nodes.get(str(raw_id))
+            _sn = _n.get('shortName') if _n else None
+            _ln = _n.get('longName') if _n else None
+        except Exception:
+            _sn = _ln = None
+        self.logger.info("mt_position_handle", from_id=raw_id, short_name=_sn, long_name=_ln, latitude=latitude, longitude=longitude)
 
     async def handle_telemetry_app(self, packet: Dict[str, Any]) -> None:
         raw_id = packet.get('fromId')
@@ -1343,7 +1415,13 @@ class MessageProcessor:
         if self.reports.get('telemetry', True):
             telemetry_info = self.node_manager.get_node_telemetry(node_id)
             await self.telegram.send_or_edit_message('telemetry', node_id, telemetry_info)
-        self.logger.info("mt_telemetry_handle", from_id=raw_id, device_metrics=device_metrics)
+        try:
+            _n = self.node_manager.nodes.get(str(raw_id))
+            _sn = _n.get('shortName') if _n else None
+            _ln = _n.get('longName') if _n else None
+        except Exception:
+            _sn = _ln = None
+        self.logger.info("mt_telemetry_handle", from_id=raw_id, short_name=_sn, long_name=_ln, device_metrics=device_metrics)
 
     async def handle_admin_app(self, packet: dict[str, Any]) -> None:
         admin_message = packet.get('decoded', {}).get('admin', {})
