@@ -24,27 +24,27 @@ Connect your Meshtastic mesh network with Telegram group chats! 📡💬
   cd meshgram-plus
   ```
 
-1. **Set up a virtual environment:**
+2. **Set up a virtual environment:**
 
   ```bash
   python3 -m venv venv
   source venv/bin/activate
   ```
 
-1. **Install dependencies:**
+3. **Install dependencies:**
 
   ```bash
   pip install -r requirements.txt
   ```
 
-1. **Configure:**
+4. **Configure:**
 
   ```bash
   cp config/example.config.yaml config/config.yaml
   $EDITOR config/config.yaml
   ```
 
-1. **Run:**
+5. **Run:**
 
   ```bash
   python src/meshgram.py
