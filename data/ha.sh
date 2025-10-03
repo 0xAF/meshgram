@@ -19,6 +19,9 @@
 #    ...
 # This output is then read line-by-line and mapped to new keys using key_map.
 
+# cd to the script's directory, so the .env file is found where the script is
+cd "$(dirname "$0")"
+
 if [ -f .env ]; then
   export $(grep -v '^#' .env | xargs)
 fi

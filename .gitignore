@@ -47,6 +47,6 @@ ehthumbs.db
 Thumbs.db
 
 nodes.json
-cache.db*
-messages.db*
+data/messages.db*
+data/cache.db*
 

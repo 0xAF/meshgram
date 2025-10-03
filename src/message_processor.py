@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import signal
 from importlib import import_module
+import os
 from typing import TypedDict, Literal, Protocol, NotRequired, cast, Any, Dict
 import sqlite3
 from datetime import datetime, timezone, timedelta
@@ -109,7 +110,9 @@ class MessageProcessor:
         # Message persistence DB (direct sqlite3)
         self._msgdb: sqlite3.Connection | None = None
         try:
-            self._msgdb = sqlite3.connect("messages.db")
+            # Ensure data directory exists and open DB under ./data
+            os.makedirs("data", exist_ok=True)
+            self._msgdb = sqlite3.connect(os.path.join("data", "messages.db"))
             # Light tuning for reliability/perf; safe defaults
             try:
                 self._msgdb.execute("PRAGMA journal_mode=WAL")
@@ -117,7 +120,7 @@ class MessageProcessor:
             except Exception:
                 pass
         except Exception as e:
-            self.logger.error(f"Failed to open messages.db: {e}", exc_info=True)
+            self.logger.error(f"Failed to open data/messages.db: {e}", exc_info=True)
             self._msgdb = None
 
     # No pre-created tables; created lazily on first insert

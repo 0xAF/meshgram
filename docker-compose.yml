@@ -1,0 +1,35 @@
+version: "3.8"
+
+services:
+  meshgram-plus:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: meshgram-plus
+    # Ensure the bot restarts automatically unless stopped
+    restart: unless-stopped
+    # Environment variables can be used inside config via envyaml (${VAR})
+    #environment:
+      # Example: provide Telegram token and chat ID via env vars (optional)
+      # TELEGRAM_BOT_TOKEN: "your-token"
+      # TELEGRAM_CHAT_ID: "123456"
+      # Example: override AI base URL or keys
+      # OPENAI_API_KEY: "..."
+      # OLLAMA_BASE_URL: "http://host.docker.internal:11434"
+    # Mount config and persist state databases (without masking app code)
+    volumes:
+      # Optionally mount your config (recommended so you can edit without rebuild)
+      - ./config/config.yaml:/app/config/config.yaml:ro
+      # Persist SQLite databases and logs (app now uses /app/data/*)
+      - ./data/:/app/data/
+    # Serial device access: set one of the following based on your setup
+    devices:
+      # Map your serial device from the host into the container. Adjust as needed.
+      # Prefer stable by-id paths when available, e.g. /dev/serial/by-id/usb-*
+      - "/dev/ttyUSB0:/dev/ttyUSB0"
+      - "/dev/ttyACM0:/dev/ttyACM0"
+    # Security note: privileged is not required; keep minimal caps
+    # If you face permission issues, consider adding the container user to the same group as the device
+    # or run with --device-cgroup-rule (Docker Engine) rather than privileged.
+    # Command can be adjusted to use a different config path inside /app
+    command: ["python", "src/meshgram.py", "-c", "config/config.yaml"]

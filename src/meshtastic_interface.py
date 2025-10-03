@@ -16,6 +16,8 @@ from logging_utils import get_logger
 from logging_utils import new_id, StructuredLogger
 from node_manager import NodeManager
 import socket
+import os
+import errno
 import io
 import contextlib
 from meshtastic.protobuf import telemetry_pb2, portnums_pb2
@@ -656,6 +658,61 @@ class MeshtasticInterface:
             self.logger.info("Reconnected to Meshtastic successfully.")
         except Exception as e:
             self.logger.error(f"Failed to reconnect to Meshtastic: {e}", exc_info=True)
+            # If the serial device is missing, exit immediately (no point retrying)
+            try:
+                device = cast(str, self.config.get('meshtastic.device', ''))
+            except Exception:
+                device = ''
+            en = getattr(e, 'errno', None)
+            msg = str(e)
+            is_no_device = (
+                isinstance(e, FileNotFoundError) or
+                (isinstance(e, OSError) and en in (errno.ENODEV, errno.ENOENT)) or
+                ('No such device' in msg) or
+                ('No such file or directory' in msg)
+            )
+            # Also treat locked/temporarily unavailable serial port as fatal (someone else holds it)
+            is_locked = (
+                (isinstance(e, OSError) and en in (errno.EBUSY, errno.EAGAIN)) or
+                ('Resource temporarily unavailable' in msg) or
+                ('device or resource busy' in msg.lower()) or
+                ('Could not exclusively lock port' in msg)
+            )
+            if is_no_device:
+                try:
+                    self.logger.error(
+                        "mt_serial_device_missing",
+                        instance=self.instance_id,
+                        device=device,
+                        errno=en,
+                    )
+                except Exception:
+                    pass
+                if self.on_reconnect_storm is not None:
+                    try:
+                        await self.on_reconnect_storm()
+                        return
+                    except Exception:
+                        pass
+                # Fallback: hard-exit
+                os._exit(1)
+            elif is_locked:
+                try:
+                    self.logger.error(
+                        "mt_serial_device_locked",
+                        instance=self.instance_id,
+                        device=device,
+                        errno=en,
+                    )
+                except Exception:
+                    pass
+                if self.on_reconnect_storm is not None:
+                    try:
+                        await self.on_reconnect_storm()
+                        return
+                    except Exception:
+                        pass
+                os._exit(1)
 
     async def _register_reconnect_attempt(self) -> None:
         """Record a reconnect attempt and trigger shutdown if storm threshold exceeded.
@@ -718,17 +775,29 @@ class MeshtasticInterface:
                         pass
 
     def getNodeInfo(self):
-        """Lightweight health probe: attempt to access local node ringtone."""
-        try:
-            output_capture = io.StringIO()
-            with contextlib.redirect_stdout(output_capture), contextlib.redirect_stderr(output_capture):
-                # self.interface.localNode.getMetadata()
-                self.interface.localNode.get_ringtone()
+        """Lightweight health probe: prefer getMyNodeInfo; fallback to ringtone call.
 
-            console_output = output_capture.getvalue()
-            if "ringtone:" in console_output:
-                return "OK"
-            return -1
+        In some environments (e.g., containers), stdout/stderr capture from the
+        meshtastic library is unreliable. Using getMyNodeInfo() is more stable.
+        """
+        try:
+            # Primary: fetch node info and validate user.id presence
+            info = self.interface.getMyNodeInfo()
+            if isinstance(info, dict):
+                uid = info.get('user', {}).get('id') if isinstance(info.get('user'), dict) else None
+                if isinstance(uid, str) and uid:
+                    return "OK"
+        except Exception as e:
+            # Log at debug; we will try fallback before raising
+            try:
+                self.logger.debug(f"getMyNodeInfo probe failed: {e}")
+            except Exception:
+                pass
+        # Fallback: attempt a no-op action on localNode that should succeed when healthy
+        try:
+            # If this call doesn't raise, consider the link healthy
+            self.interface.localNode.get_ringtone()  # type: ignore[attr-defined]
+            return "OK"
         except (socket.error, BrokenPipeError, ConnectionResetError, Exception) as e:
             self.logger.error(f"Error retrieving node info: {e}")
             raise e  # Propagate the error to handle reconnection

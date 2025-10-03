@@ -18,6 +18,7 @@ Rules:
 """
 
 import logging
+import os
 import shutil
 import re
 from typing import Any, Dict
@@ -322,7 +323,14 @@ def configure_logging(config: Dict[str, Any]) -> None:
 
     if logging_cfg.get('file_log', False):
         try:
-            handlers.append(logging.FileHandler(logging_cfg.get('file_path', 'meshgram.log')))
+            # Ensure data directory exists and default log file path points to ./data
+            default_path = 'data/meshgram.log'
+            file_path = str(logging_cfg.get('file_path', default_path))
+            try:
+                os.makedirs(os.path.dirname(file_path) or '.', exist_ok=True)  # type: ignore[name-defined]
+            except Exception:
+                pass
+            handlers.append(logging.FileHandler(file_path))
         except Exception as e:  # pragma: no cover - filesystem dependent
             logging.error(f"Failed to open log file: {e}")
 

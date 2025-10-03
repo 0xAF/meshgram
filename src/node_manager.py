@@ -34,8 +34,10 @@ class NodeManager:
     def __init__(self, config: ConfigManager) -> None:
         self.config: ConfigManager = config
         self.logger = get_logger(__name__)
+        # Ensure data directory exists and store cache under ./data
+        os.makedirs('data', exist_ok=True)
         self.nodes: Dict[str, NodeData] = SqliteDict(
-            'cache.db',
+            'data/cache.db',
             tablename="nodes",
             autocommit=True,
             encode=json.dumps,
@@ -53,7 +55,7 @@ class NodeManager:
     def migrate_nodes_from_old_cache(self):
         try:
             with open('nodes.json', 'r') as f:
-                self.logger.info("Migrating nodes from nodes.json to cache.db...")
+                self.logger.info("Migrating nodes from nodes.json to data/cache.db...")
                 migration_nodes = json.load(f)
                 for node_id, data in migration_nodes.items():
                     if 'last_updated' not in data:

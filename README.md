@@ -63,6 +63,49 @@ Use `config/example.config.yaml` as a starting point. It’s fully commented and
 - Reports: telemetry, location, nodes
 - Logging: per‑lib levels, syslog/file options
 - AI: provider (ollama/openai), model/base_url, system prompt, tools (local weather)
+  
+## 🐳 Docker (compose)
+
+Run the bot in a container with Docker Compose (includes serial device access and persistence):
+
+1. Prepare config and data directory
+
+  ```bash
+  # from the repo root
+  mkdir -p data
+  cp config/example.config.yaml config/config.yaml
+  $EDITOR config/config.yaml
+  ```
+
+Tips:
+
+- If using a serial device, set in `config/config.yaml`:
+  - `meshtastic.connection_type: serial`
+  - `meshtastic.device: "/dev/ttyUSB0"` (or your actual path; stable options under `/dev/serial/by-id/*`)
+- Ensure the same device path is mapped in `docker-compose.yml` under `services.meshgram.devices`.
+  - Optional file logging: set `logging.file_log: true` to write `./data/meshgram.log` (inside container: `/app/data/meshgram.log`).
+
+1. Build and run
+
+  ```bash
+  docker compose build
+  docker compose up -d
+  ```
+
+1. View logs and stop
+
+  ```bash
+  docker compose logs -f
+  docker compose down
+  ```
+
+Notes
+
+- The compose file mounts:
+  - `./config/config.yaml` into the container (read-only)
+  - `./data/messages.db`, `./data/cache.db`, and `./data/meshgram.log` for persistence
+- Environment variables referenced in config (e.g., `${TELEGRAM_BOT_TOKEN}`) can be provided via the `environment:` section in `docker-compose.yml` or your shell.
+- On Linux, ensure your user has permissions to the serial device (often group `dialout`), and that the device path exists before starting the container.
    
 ## 📡 Telegram Commands
 
