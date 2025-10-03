@@ -16,20 +16,30 @@ Connect your Meshtastic mesh network with Telegram group chats! 📡💬
 ## 🛠 Requirements
 
 - Python 3.11+ 🐍
-- Install dependencies with `pip install -r requirements.txt`
 
-1. **Set up a virtual environment:**
-
-  ```bash
-   python3 -m venv venv
-   source venv/bin/activate
-   ```
-
-1. **Clone and configure:**
+1. **Clone the project:**
 
   ```bash
   git clone https://github.com/0xAF/meshgram-plus
   cd meshgram-plus
+  ```
+
+1. **Set up a virtual environment:**
+
+  ```bash
+  python3 -m venv venv
+  source venv/bin/activate
+  ```
+
+1. **Install dependencies:**
+
+  ```bash
+  pip install -r requirements.txt
+  ```
+
+1. **Configure:**
+
+  ```bash
   cp config/example.config.yaml config/config.yaml
   $EDITOR config/config.yaml
   ```
