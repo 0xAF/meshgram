@@ -501,6 +501,7 @@ class MessageProcessor:
         payload = decoded.get('payload', b'')
         text: str = payload.decode('utf-8') if isinstance(payload, (bytes, bytearray)) else str(payload)
         request = text
+        tg_trigger_responses: list[str] = []
         # Normalize channel number to int for type safety
         raw_channel = packet.get('channel', 0)
         try:
@@ -606,6 +607,11 @@ class MessageProcessor:
                 )
                 # Send any queued replies due to triggers (e.g., op=reply/test)
                 if trigger_replies:
+                    # Keep for Telegram rendering
+                    try:
+                        tg_trigger_responses = list(trigger_replies)
+                    except Exception:
+                        tg_trigger_responses = trigger_replies  # type: ignore[assignment]
                     send_to = sender
                     out_channel = 0
                     if recipient == "^all":
@@ -719,6 +725,17 @@ class MessageProcessor:
                 f"💻 <b>{channel_label} CMD: {is_command} `{sender}` - `{from_short}` - `{from_long}`</b>\n"
                 f"<u>[REQ]</u>: {request}\n"
                 f"<u>[RPL]</u>: {text}\n"
+            )
+        elif tg_trigger_responses:
+            joined = "\n".join(tg_trigger_responses)
+            try:
+                self.logger.info(f"TRIGGER from {from_short}:\nREQ: {request}\nRPL: {joined}")
+            except Exception:
+                pass
+            message = (
+                f"💡 <b>{channel_label} TRIGGER `{sender}` - `{from_short}` - `{from_long}`</b>\n"
+                f"<u>[REQ]</u>: {request}\n"
+                f"<u>[RPL]</u>: {joined}\n"
             )
         else:
             message = f"💬 <b>{channel_label} `{sender}` - `{from_long}`</b>\n<u>`{from_short}`</u>: {text}\n\n"

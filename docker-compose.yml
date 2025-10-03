@@ -22,6 +22,8 @@ services:
       - ./config/config.yaml:/app/config/config.yaml:ro
       # Persist SQLite databases and logs (app now uses /app/data/*)
       - ./data/:/app/data/
+      # Mount source for live development
+      - ./src:/app/src:rw
     # Serial device access: set one of the following based on your setup
     devices:
       # Map your serial device from the host into the container. Adjust as needed.
@@ -33,3 +35,15 @@ services:
     # or run with --device-cgroup-rule (Docker Engine) rather than privileged.
     # Command can be adjusted to use a different config path inside /app
     command: ["python", "src/meshgram.py", "-c", "config/config.yaml"]
+
+    # Enable docker compose watch for live-reload during development
+    develop:
+      watch:
+        - path: ./src
+          action: restart
+        - path: ./config/config.yaml
+          action: restart
+        - path: ./requirements.txt
+          action: rebuild
+        - path: ./Dockerfile
+          action: rebuild
