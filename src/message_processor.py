@@ -580,41 +580,59 @@ class MessageProcessor:
             pass
 
         receive_only_channels = self.config.get('meshtastic.receive_only_channels', [])  # type: ignore[assignment]
-
-        # Normalize AI triggers: if text starts with ai/bot/ии/аи/бот (with or without colon), replace with "/ai "
-        ai_triggers = ["ai", "bot", "аи", "ии", "бот"]
-        if channel_num not in receive_only_channels:
-            for trigger in ai_triggers:
-                for sep in (":", ",", ""):
-                    prefix = f"{trigger}{sep}"
-                    if isinstance(text, str) and text.lower().startswith(prefix):
-                        # Replace only at the start
-                        text = "/ai " + text[len(prefix):].lstrip()
-                        break
-                else:
-                    continue
-                break
-
-        # Detect "flight", "plane", airplane emoji, or similar words and prepend "/ai " if found
-        travel_keywords = [
-            "flight", "plane", "airplane", "flying", "airport", "boarding", "takeoff", "landing",
-            "in the air", "plane", "travel", "cruise", "jet", "aircraft", "aviation", "boat", "ship", "sail",
-            # Air travel emojis
-            "🚀", "🛩️", "🛫", "🛬", "✈️", "🛩",
-            # Sea travel emojis
-            "🛥️", "🚢", "⛴️", "⛵", "🛶", "🚤", "🛳️",
-            # Land travel emojis
-            "🚗", "🚙", "🚕", "🚓", "🚚", "🚛", "🚜", "🏍️", "🛵", "🚲", "🚌", "🚎", "🚐", "🚒", "🚑", "🚃", "🚄", "🚅", "🚆", "🚇", "🚈", "🚉", "🚊", "🚝", "🚞", "🚋", "🚍", "🚔", "🚖", "🚘", "🚍",
-            # Mountain and adventure travel emojis
-            "🏔️", "⛰️", "🏕️", "🏞️", "🎒", "🧗", "🧗‍♂️", "🧗‍♀️", "🚵", "🚵‍♂️", "🚵‍♀️", "🏂", "⛷️", "🏄", "🏄‍♂️", "🏄‍♀️", "🏊", "🏊‍♂️", "🏊‍♀️",
-            # General travel/holiday emojis
-            "🌍", "🌎", "🌏", "🗺️", "🧳", "🏨", "🏩", "🏬", "🏯", "🏰", "🗽", "🗼", "🕌", "⛩️", "🕍", "🛎️", "🏝️", "🏖️", "🏜️", "🏟️", "🎢", "🎡", "🎠",
-        ]
-        if channel_num not in receive_only_channels:
-            text_lower = text.lower() if isinstance(text, str) else ""
-            if any(word in text_lower for word in travel_keywords):
-                if not text_lower.startswith("/travel "):
-                    text = "/travel " + text
+        # Apply config-driven triggers: transform text and send any trigger replies
+        if channel_num not in receive_only_channels and isinstance(text, str):
+            try:
+                text, trigger_replies = self._run_meshtastic_triggers(
+                    text,
+                    ctx={
+                        'sender': sender,
+                        'recipient': recipient,
+                        'channel_num': channel_num,
+                        'from_short': from_short,
+                        'to_short': to_short,
+                        'hops_start': hops_start,
+                        'hops_limit': hops_limit,
+                        'hops_away': hops_away,
+                        'rssi': rssi,
+                        'snr': snr,
+                        'mqtt': mqtt,
+                        'signal_emoji': signal_emoji,
+                        'signal_label': signal_label,
+                    }
+                )
+                # Send any queued replies due to triggers (e.g., op=reply/test)
+                if trigger_replies:
+                    send_to = sender
+                    out_channel = 0
+                    if recipient == "^all":
+                        send_to = "^all"
+                        out_channel = channel_num
+                    # if self.config.get('meshtastic.reply_directly', False):
+                        # send_to = sender
+                        # out_channel = 0
+                    for idx, reply_text in enumerate(trigger_replies, start=1):
+                        try:
+                            meshtastic_message_id = await self.meshtastic.send_message(reply_text, send_to, channel=out_channel)
+                            self.pending_acks[meshtastic_message_id] = {
+                                'telegram_message_id': 0,
+                                'telegram_thread_id': 0,
+                                'timestamp': datetime.now(timezone.utc)
+                            }
+                            self.logger.info(
+                                "trigger_reply_sent",
+                                instance=self.instance_id,
+                                bridge_id=bridge_id,
+                                meshtastic_message_id=meshtastic_message_id,
+                                idx=idx,
+                                sender=sender,
+                                recipient=recipient,
+                                channel=out_channel,
+                            )
+                        except Exception as e:
+                            self.logger.error(f"Failed to send trigger reply: {e}", exc_info=True)
+            except Exception:
+                pass
         
         is_command: str | None = None
         if channel_num not in receive_only_channels:
@@ -751,25 +769,148 @@ class MessageProcessor:
 
     # --- Telegram Message Handlers ---
 
+    def _run_meshtastic_triggers(self, text: str, ctx: dict[str, Any]) -> tuple[str, list[str]]:
+        """Apply meshtastic trigger rules and also collect reply actions.
+
+        - replace: re.sub(key, val, text, count=1)
+        - prepend: if regex matches anywhere, prefix val + space unless already present
+    - reply: if regex matches, format rule.val as a template with ctx and queue to send
+        Returns transformed_text, [reply_text, ...].
+        """
+        try:
+            rules = self.config.get('meshtastic.triggers', [])  # type: ignore[assignment]
+        except Exception:
+            rules = []
+        if not isinstance(rules, list) or not rules:
+            return text, []
+        import re as _re
+        out = text
+        replies: list[str] = []
+        # Build formatting context for templates
+        fmt = dict(ctx)
+        # Aliases for convenience in templates
+        fmt['short_name'] = ctx.get('from_short')
+        # Derived fields
+        fmt['signal'] = ctx.get('signal_label')
+        fmt['signal_full'] = f"{ctx.get('signal_emoji', '')} {ctx.get('signal_label', '')}".strip()
+        fmt['mqtt_flag'] = " (MQTT)" if ctx.get('mqtt') else ""
+        # Optional channel name
+        try:
+            channels = self.config.get('channels', [])  # type: ignore[assignment]
+            chn = None
+            if isinstance(channels, list) and isinstance(ctx.get('channel_num'), int):
+                idx = int(ctx['channel_num'])
+                chn = channels[idx] if 0 <= idx < len(channels) else None
+            fmt['channel_name'] = chn
+        except Exception:
+            fmt['channel_name'] = None
+
+        for rule in rules:
+            try:
+                key = rule.get('key') if isinstance(rule, dict) else None
+                op = str(rule.get('op', '')).strip().lower() if isinstance(rule, dict) else ''
+                val = rule.get('val') if isinstance(rule, dict) else None
+                if not isinstance(key, str) or not key:
+                    continue
+                pattern = _re.compile(key, flags=_re.IGNORECASE)
+                if op == 'replace':
+                    if pattern.search(out) and isinstance(val, str):
+                        out = pattern.sub(val, out, count=1)
+                elif op == 'prepend':
+                    if pattern.search(out) and isinstance(val, str):
+                        prefix = val if out.lower().startswith(val.lower()) else f"{val} "
+                        out = prefix + out
+                elif op == 'reply':
+                    # Queue a reply if matches. Use val as template or fallback to default if missing.
+                    if pattern.search(out):
+                        template = val if isinstance(val, str) and val.strip() else (
+                            "{short_name}: Ack. Signal {signal_emoji} {signal}. "
+                            "HopsAway={hops_away}, HStart={hops_start}, HLimit={hops_limit}, "
+                            "RSSI={rssi}, SNR={snr}{mqtt_flag}."
+                        )
+                        try:
+                            replies.append(str(template).format(**fmt))
+                        except Exception:
+                            # On bad template, append raw template
+                            replies.append(str(template))
+                else:
+                    # Unsupported op -> skip
+                    continue
+            except Exception:
+                # Ignore malformed rules or regex errors
+                continue
+        return out, replies
+
+    def _apply_meshtastic_triggers(self, text: str) -> str:
+        """Apply meshtastic.triggers rules from config to the input text.
+
+                Config shape (YAML):
+                    meshtastic:
+                        triggers:
+                            - key: "^bot[:,\\s]+"
+                                op: "replace"
+                                val: "/ai"
+                            - key: "(flight|plane)"
+                                op: "prepend"
+                                val: "/travel"
+
+        Behavior:
+          - For op=replace: re.sub(key, val, text, count=1)
+          - For op=prepend: if regex matches anywhere, prefix val + space unless text already starts with val
+        Rules are applied in list order; the text is transformed cumulatively.
+        """
+        # Legacy helper kept for compatibility in case it's used elsewhere
+        transformed, _ = self._run_meshtastic_triggers(text, ctx={})
+        return transformed
+
+    def _apply_telegram_triggers(self, text: str) -> str:
+        """Apply telegram.triggers rules from config to the input text.
+
+        Same structure as meshtastic.triggers, but under telegram.triggers.
+        """
+        try:
+            rules = self.config.get('telegram.triggers', [])  # type: ignore[assignment]
+        except Exception:
+            rules = []
+        if not isinstance(rules, list) or not rules:
+            return text
+        import re as _re
+        out = text
+        for rule in rules:
+            try:
+                key = rule.get('key') if isinstance(rule, dict) else None
+                op = str(rule.get('op', '')).strip().lower() if isinstance(rule, dict) else ''
+                val = rule.get('val') if isinstance(rule, dict) else None
+                if not (isinstance(key, str) and key and isinstance(val, str)):
+                    continue
+                pattern = _re.compile(key, flags=_re.IGNORECASE)
+                if op == 'replace':
+                    if pattern.search(out):
+                        out = pattern.sub(val, out, count=1)
+                elif op == 'prepend':
+                    if pattern.search(out):
+                        prefix = val if out.lower().startswith(val.lower()) else f"{val} "
+                        out = prefix + out
+                else:
+                    continue
+            except Exception:
+                continue
+        return out
+
     async def handle_telegram_message(self, message: TelegramMessage) -> None:
         """Dispatch a normalized Telegram message to its concrete handler."""
-        # Inline AI trigger for plain Telegram text: if message starts with
-        # bot/ai/бот/аи/ии (optionally followed by ':' or ',') treat as /ai.
+        # Inline Telegram triggers: apply regex rules from telegram.triggers and handle /ai locally
         if message.get('type') == 'telegram':
             raw_text = str(message.get('text') or '')
             text_l = raw_text.lstrip()
-            ai_triggers = ["ai", "bot", "аи", "ии", "бот"]
-            matched = False
-            for trig in ai_triggers:
-                for sep in (":", ",", ""):
-                    prefix = f"{trig}{sep}"
-                    if text_l.lower().startswith(prefix):
-                        prompt = text_l[len(prefix):].lstrip()
-                        matched = True
-                        break
-                if matched:
-                    break
-            if matched:
+            # Transform text using configured triggers (replace/prepend)
+            try:
+                text_l = self._apply_telegram_triggers(text_l)
+            except Exception:
+                pass
+            # Handle /ai inline (same behavior as before)
+            if text_l.startswith('/ai'):
+                prompt = text_l[len('/ai'):].lstrip()
                 thread_id = message.get('thread_id')
                 user_id = message.get('user_id')
                 if not self.ai_enabled_telegram:
@@ -780,7 +921,6 @@ class MessageProcessor:
                     return
                 conv_id = str(user_id) if user_id is not None else 'global'
                 reply = await self._ai_chat(prompt, conversation_id=conv_id)
-                # Reply to the triggering message if we have its id
                 reply_to = message.get('message_id') if isinstance(message.get('message_id'), int) else None
                 await self.telegram.send_message(
                     reply[:3500],
@@ -1244,7 +1384,19 @@ class MessageProcessor:
         """Reply to '/travel' with a fixed safety message."""
         if not self.config.get('meshtastic.commands.travel', True):
             return f"{from_short} → travel not enabled"
-        reply_text = "This is Varna, Bulgaria. Be safe."
+        tpl = self.config.get('meshtastic.travel_template', "This is Varna, Bulgaria. Be safe.")
+        try:
+            reply_text = str(tpl).format(
+                from_short=from_short,
+                to_short=to_short,
+                hops_away=hops_away,
+                hops_limit=hops_limit,
+                hops_start=hops_start,
+                signal=signal_label,
+                signal_emoji=signal_emoji,
+            )
+        except Exception:
+            reply_text = str(tpl)
         # travel_command_rx: include long names if available
         from_ln = None
         to_ln = None

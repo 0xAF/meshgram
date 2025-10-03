@@ -21,6 +21,12 @@ telegram:
   raw_markdown: false
   # Enable AI responses via Telegram command /ai (feature key 'ait')
   ai_enabled: false
+  # Optional regex triggers to transform plain Telegram text into commands
+  # Structure mirrors meshtastic.triggers
+  triggers:
+    - key: "^(ai|bot|бот|аи|ии)[:,\\s]+"
+      op: "replace"
+      val: "/ai "
 
 meshtastic:
   # How to connect to your Meshtastic node: 'serial' or 'tcp'
@@ -56,10 +62,32 @@ meshtastic:
     help: true   # /help command
     ai: false    # enable /ai mesh command (feature key 'aim')
     travel: true # enable /travel safety reminder command
+  # Template for /travel replies; supported placeholders:
+  #   {from_short} {to_short} {hops_away} {hops_limit} {hops_start} {signal} {signal_emoji}
+  travel_template: "✈️ Safe travels — signal: {signal_emoji} {signal}, hops: {hops_away}. Carry a power bank and share your route in FB groups."
   
   reply_directly: false # if true, replies go directly to the sender instead of the channel
   # Master mesh AI feature flag (aim)
   ai_enabled: false
+
+  # Optional regex-based triggers to transform inbound mesh messages into commands
+  # Each rule has:
+  #   key: regex pattern (Python re, case-insensitive)
+  #        NOTE: In YAML strings, backslashes must be escaped. For example, use "\\b" for a word boundary.
+  #   op:  one of [replace, prepend, reply]
+  #   val: replacement string / prefix (for replace/prepend) or a reply template for 'reply'.
+  #        Template supports: {short_name}, {from_short}, {to_short}, {hops_away}, {hops_limit}, {hops_start},
+  #        {rssi}, {snr}, {signal_emoji}, {signal} (aka signal_label), {mqtt_flag}, {channel_num}, {channel_name}.
+  triggers:
+    - key: "^(ai|bot|бот|аи|ии)[:,\\s]+" # trigger by "bot," "bot:" "bot "
+      op: "replace"
+      val: "/ai "
+    - key: "^(test(ing)?|тест)\\b"
+      op: "reply"
+      val: "{short_name}: Ack. Signal {signal_emoji} {signal}. HopsAway={hops_away}, HStart={hops_start}, HLimit={hops_limit}, RSSI={rssi}, SNR={snr}{mqtt_flag}. Better use /ping command. And even better use it in Direct Message."
+    - key: "(flight|plane|airplane|flying|airport|boarding|takeoff|landing|in the air|travel|cruise|jet|aircraft|aviation|boat|ship|sail|🚀|🛩️|🛫|🛬|✈️|🛩|🛥️|🚢|⛴️|⛵|🛶|🚤|🛳️|🚗|🚙|🚕|🚓|🚚|🚛|🚜|🏍️|🛵|🚲|🚌|🚎|🚐|🚒|🚑|🚃|🚄|🚅|🚆|🚇|🚈|🚉|🚊|🚝|🚞|🚋|🚍|🚔|🚖|🚘|🏔️|⛰️|🏕️|🏞️|🎒|🧗|🧗‍♂️|🧗‍♀️|🚵|🚵‍♂️|🚵‍♀️|🏂|⛷️|🏄|🏄‍♂️|🏄‍♀️|🏊|🏊‍♂️|🏊‍♀️|🌍|🌎|🌏|🗺️|🧳|🏨|🏩|🏬|🏯|🏰|🗽|🗼|🕌|⛩️|🕍|🛎️|🏝️|🏖️|🏜️|🏟️|🎢|🎡|🎠)"
+      op: "prepend"
+      val: "/travel"
 
   # Link template to a node info page; {node_id} is replaced with the numeric id
   node_info_link: "https://meshmap.net/{node_id}"
