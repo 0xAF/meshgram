@@ -27,6 +27,11 @@ telegram:
     - key: "^(ai|bot|бот|аи|ии)[:,\\s]+"
       op: "replace"
       val: "/ai "
+  # Post a message in the default topic when the bot starts
+  notify_on_start: true
+  # Which topic to post the startup message into (when use_topics=true)
+  # Use a key from the 'topics' section below or 'default'
+  startup_topic: "default"
 
 meshtastic:
   # How to connect to your Meshtastic node: 'serial' or 'tcp'
@@ -56,6 +61,8 @@ meshtastic:
 
   admin_nodes:
     - '1b8c7774' # node id of an admin node that can use /admin command
+  # Send a direct message to each admin node when the bot starts
+  notify_admins_on_start: true
 
   commands:
     ping: true   # /ping command to get your hop count and node id back
@@ -69,6 +76,11 @@ meshtastic:
   reply_directly: false # if true, replies go directly to the sender instead of the channel
   # Master mesh AI feature flag (aim)
   ai_enabled: false
+
+  # Action when the serial connection is lost or becomes unhealthy:
+  #   - exit: terminate the process so Docker/systemd can restart it (default)
+  #   - reconnect: keep trying to reconnect
+  on_disconnect: exit
 
   # Optional regex-based triggers to transform inbound mesh messages into commands
   # Each rule has:

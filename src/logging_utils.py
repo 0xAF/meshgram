@@ -24,6 +24,7 @@ import re
 from typing import Any, Dict
 import itertools
 from typing import TypeAlias
+import threading
 
 # Permissive value type accepted for logging fields (kept broad intentionally)
 # Use a broad union plus object; fall back to repr for unsupported types.
@@ -343,6 +344,82 @@ def configure_logging(config: Dict[str, Any]) -> None:
 
     logging.getLogger('httpx').setLevel(log_level_httpx)
     logging.getLogger('telegram').setLevel(log_level_telegram)
+
+    # Escalate Meshtastic serial disconnect warnings to ERROR and optionally exit.
+    class _SerialDisconnectExitFilter(logging.Filter):  # pragma: no cover - runtime side-effect
+        def __init__(self, exit_on_disconnect: bool) -> None:
+            super().__init__()
+            self.exit_on_disconnect = exit_on_disconnect
+            self._exit_scheduled = False
+
+        def filter(self, record: logging.LogRecord) -> bool:
+            try:
+                msg = record.getMessage()
+            except Exception:
+                return True
+            low = (msg or "").lower()
+            # Typical Meshtastic warning message when serial port goes away or double-opened.
+            if (
+                "serial port disconnected" in low or
+                "returned no data" in low or
+                "multiple access on port" in low
+            ):
+                # Promote to ERROR for visibility
+                record.levelno = logging.ERROR
+                record.levelname = "ERROR"
+                if self.exit_on_disconnect and not self._exit_scheduled:
+                    self._exit_scheduled = True
+                    try:
+                        # Flush existing handlers best-effort
+                        for h in logging.root.handlers:
+                            try:
+                                h.flush()
+                            except Exception:
+                                pass
+                        # Schedule a short-delayed exit so this record can be emitted first
+                        t = threading.Timer(0.2, os._exit, args=(1,))
+                        t.daemon = True
+                        t.start()
+                    except Exception:
+                        # Fallback immediate exit if scheduling fails
+                        os._exit(1)
+            return True
+
+    try:
+        # New config: meshtastic.on_disconnect: 'exit' | 'reconnect' (default 'exit')
+        # Back-compat: meshtastic.exit_on_disconnect: bool
+        on_disc = str(((config or {}).get('meshtastic', {}) or {}).get('on_disconnect', '') or '').strip().lower()
+        if on_disc not in ('exit', 'reconnect'):
+            legacy = ((config or {}).get('meshtastic', {}) or {}).get('exit_on_disconnect', None)
+            if isinstance(legacy, bool):
+                on_disc = 'exit' if legacy else 'reconnect'
+        if on_disc not in ('exit', 'reconnect'):
+            on_disc = 'exit'
+        exit_on_disconnect = (on_disc == 'exit')
+        _f = _SerialDisconnectExitFilter(exit_on_disconnect)
+        # Attach to root logger and its handlers
+        root_logger = logging.getLogger()
+        root_logger.addFilter(_f)
+        for h in list(root_logger.handlers):
+            try:
+                h.addFilter(_f)
+            except Exception:
+                pass
+        # Also attach to meshtastic loggers (module uses hierarchical names)
+        for name in ("meshtastic", "meshtastic.serial_interface", "meshtastic.stream_interface", "stream_interface"):
+            try:
+                lg = logging.getLogger(name)
+                lg.propagate = True  # ensure it reaches root as well
+                lg.addFilter(_f)
+                for h in list(lg.handlers):
+                    try:
+                        h.addFilter(_f)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+    except Exception:
+        pass
 
     if logging_cfg.get('use_syslog', False):
         try:

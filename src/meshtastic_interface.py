@@ -100,6 +100,23 @@ class MeshtasticInterface:
         self._reconnect_attempts = deque()
         self._reconnect_storm_triggered = False
         self._send_in_progress = asyncio.Event()
+        # Exit strategy on serial disconnect/health failures (configurable)
+        # New key: meshtastic.on_disconnect: 'exit' | 'reconnect' (default: 'exit')
+        # Back-compat: meshtastic.exit_on_disconnect: bool
+        try:
+            on_disc = str(self.config.get('meshtastic.on_disconnect', '') or '').strip().lower()
+        except Exception:
+            on_disc = ''
+        if on_disc not in ('exit', 'reconnect'):
+            try:
+                legacy = self.config.get('meshtastic.exit_on_disconnect', None)
+                if isinstance(legacy, bool):
+                    on_disc = 'exit' if legacy else 'reconnect'
+            except Exception:
+                on_disc = ''
+        if on_disc not in ('exit', 'reconnect'):
+            on_disc = 'exit'
+        self.exit_on_disconnect: bool = (on_disc == 'exit')
         # Configurable send delay (ms -> seconds)
         try:
             delay_ms = self.config.get('meshtastic.send_delay_ms', 200)
@@ -813,7 +830,7 @@ class MeshtasticInterface:
                     pass
                 await asyncio.sleep(1)
                 continue
-            self.logger.debug("Performing periodic health check...")
+            # self.logger.debug("Performing periodic health check...")
             self.logger.debug("mt_health_check", instance=self.instance_id)
             if self.interface is None:
                 self.logger.warning("Meshtastic interface is not initialized, attempting to reconnect...")
@@ -825,10 +842,22 @@ class MeshtasticInterface:
                 if info == -1 or info is None:
                     self.logger.error("Health check failed: Invalid or no node info received. Attempting to reconnect...")
                     self.logger.error("mt_health_invalid", instance=self.instance_id)
+                    if self.exit_on_disconnect:
+                        try:
+                            self.logger.error("mt_health_fatal_exit", instance=self.instance_id)
+                        except Exception:
+                            pass
+                        if self.on_reconnect_storm is not None:
+                            try:
+                                await self.on_reconnect_storm()
+                                return
+                            except Exception:
+                                pass
+                        os._exit(1)
                     await self.reconnect()
                     continue
                 self.logger.debug(f"Health check = {info}")
-                self.logger.debug("mt_health_ok", instance=self.instance_id)
+                self.logger.info("mt_health_ok", instance=self.instance_id)
             except Exception as e:
                 if isinstance(e, TimeoutError):
                     self.logger.error("Health check failed: Timeout while retrieving node info.")
@@ -836,6 +865,18 @@ class MeshtasticInterface:
                 else:
                     self.logger.error(f"Health check failed: {e}", exc_info=True)
                     self.logger.error("mt_health_error", instance=self.instance_id, error=str(e))
+                if self.exit_on_disconnect:
+                    try:
+                        self.logger.error("mt_health_fatal_exit", instance=self.instance_id)
+                    except Exception:
+                        pass
+                    if self.on_reconnect_storm is not None:
+                        try:
+                            await self.on_reconnect_storm()
+                            return
+                        except Exception:
+                            pass
+                    os._exit(1)
                 await self.reconnect()
             await asyncio.sleep(HEALTH_CHECK_INTERVAL_SECONDS)  # Check periodically
 

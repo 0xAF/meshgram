@@ -125,6 +125,12 @@ class Meshgram:
             asyncio.create_task(self.meshtastic.periodic_telemetry_report()),
         ]
 
+        # Fire-and-forget startup notifications once background workers are active
+        try:
+            asyncio.create_task(self._send_startup_notifications())
+        except Exception:
+            pass
+
         try:
             await asyncio.gather(*self.tasks)
         except asyncio.CancelledError:
@@ -133,6 +139,61 @@ class Meshgram:
             self.logger.error(f"Unexpected error: {e}", exc_info=True)
         finally:
             await self.shutdown()
+
+    async def _send_startup_notifications(self) -> None:
+        """Notify admins on the mesh and users in Telegram that the bot started."""
+        # Small delay to ensure workers are accepting work
+        await asyncio.sleep(0.5)
+        try:
+            from datetime import datetime, timezone
+            ts = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+        except Exception:
+            ts = "now"
+        # Compose common markers
+        try:
+            bot_sn = getattr(self.meshtastic, 'my_short_name', '') if self.meshtastic else ''
+            bot_id = getattr(self.meshtastic, 'my_node_id', '') if self.meshtastic else ''
+        except Exception:
+            bot_sn = ''
+            bot_id = ''
+
+        # Telegram announcement in default topic (or configured one)
+        try:
+            if self.telegram and self.config.get('telegram.notify_on_start', True):
+                topic = self.config.get('telegram.startup_topic', 'default')
+                text = f"✅ Bot is up and running. (run_id={self.run_id})"
+                if bot_sn or bot_id:
+                    text += f" — node {bot_sn or bot_id}"
+                text += f" — {ts}"
+                _ = await self.telegram.send_message(text=text, topic=str(topic))
+                self.logger.info("startup_notify_telegram", run_id=self.run_id, topic=str(topic))
+        except Exception as e:
+            self.logger.error(f"startup_notify_telegram_error: {e}", exc_info=True)
+
+        # Meshtastic DMs to admins (if any)
+        try:
+            if self.meshtastic and self.config.get('meshtastic.notify_admins_on_start', True):
+                admins = self.config.get('meshtastic.admin_nodes', [])
+                if isinstance(admins, list) and admins:
+                    dm_text = f"BOT online ✅ (run_id={self.run_id}) — {ts}"
+                    if bot_sn or bot_id:
+                        dm_text += f" — node {bot_sn or bot_id}"
+                    for raw_id in admins:
+                        try:
+                            if not isinstance(raw_id, str):
+                                continue
+                            rid = raw_id.strip()
+                            if not rid:
+                                continue
+                            recipient = rid if rid.startswith('!') else f"!{rid}"
+                            _ = await self.meshtastic.send_message(dm_text, recipient, channel=0)
+                            self.logger.info("startup_notify_meshtastic", run_id=self.run_id, recipient=recipient)
+                            # brief pacing to avoid burst on startup
+                            await asyncio.sleep(0.1)
+                        except Exception as e:
+                            self.logger.error(f"startup_notify_meshtastic_error for {raw_id}: {e}")
+        except Exception as e:
+            self.logger.error(f"startup_notify_meshtastic_error: {e}", exc_info=True)
 
 async def main() -> None:
     parser = argparse.ArgumentParser(description='Meshgram: Meshtastic-Telegram Bridge')
