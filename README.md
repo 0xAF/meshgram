@@ -12,6 +12,7 @@ Connect your Meshtastic mesh network with Telegram group chats! 📡💬
 - 🧩 Triggers engine: regex replace/prepend (mesh + Telegram) and reply (mesh) with placeholders (signal, RSSI/SNR, hops, MQTT, channel)
 - ✈️ Travel reply template with placeholders
 - 🔀 Per‑channel control: channel names, ignored_channels, receive_only_channels; default node/channel targeting
+- ✉️ BBS (beta): DM‑only private messages with 200B limit, queued delivery, nudges on appearance, and first‑seen recipient selection
 
 ## 🛠 Requirements
 

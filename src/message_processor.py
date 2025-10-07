@@ -1983,17 +1983,23 @@ class MessageProcessor:
         if not args:
             return f"{from_short} → usage: /ai <prompt>"
         prompt = " ".join(args)
-        node = self.node_manager.nodes.get(sender) if hasattr(self.node_manager, 'nodes') else None
-        conv_id = None
-        try:
-            if node:
-                sn = node.get('shortName')
-                if isinstance(sn, str) and sn.strip():
-                    conv_id = sn.strip()
-        except Exception:
-            pass
-        if not conv_id:
-            conv_id = sender
+        # Conversation scoping:
+        # - Direct message to bot: per-node context (prefer shortName, fallback to node id)
+        # - Channel (^all): per-channel global context keyed by channel number
+        conv_id: str | None = None
+        if recipient == "^all":
+            conv_id = f"mesh:channel:{channel_num}"
+        else:
+            node = self.node_manager.nodes.get(sender) if hasattr(self.node_manager, 'nodes') else None
+            try:
+                if node:
+                    sn = node.get('shortName')
+                    if isinstance(sn, str) and sn.strip():
+                        conv_id = sn.strip()
+            except Exception:
+                pass
+            if not conv_id:
+                conv_id = sender
         reply_full = await self._ai_chat(prompt, conv_id)
         send_to = sender
         if recipient == "^all":
@@ -2023,17 +2029,23 @@ class MessageProcessor:
         client = await self._get_ai_client()
         if not client:
             return f"{from_short} → AI unavailable"
-        node = self.node_manager.nodes.get(sender) if hasattr(self.node_manager, 'nodes') else None
-        conv_id = None
-        try:
-            if node:
-                sn = node.get('shortName')
-                if isinstance(sn, str) and sn.strip():
-                    conv_id = sn.strip()
-        except Exception:
-            pass
-        if not conv_id:
-            conv_id = sender
+        # Conversation scoping for reset mirrors /ai:
+        # - Direct message: per-node
+        # - Channel (^all): per-channel
+        conv_id: str | None = None
+        if recipient == "^all":
+            conv_id = f"mesh:channel:{channel_num}"
+        else:
+            node = self.node_manager.nodes.get(sender) if hasattr(self.node_manager, 'nodes') else None
+            try:
+                if node:
+                    sn = node.get('shortName')
+                    if isinstance(sn, str) and sn.strip():
+                        conv_id = sn.strip()
+            except Exception:
+                pass
+            if not conv_id:
+                conv_id = sender
         client.reset(conv_id)
         reply_text = f"{from_short} → AI context reset"
         send_to = sender
