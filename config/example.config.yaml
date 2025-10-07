@@ -182,3 +182,13 @@ ai:
     base_url: "http://127.0.0.1:11434"
     model: "llama3.1"
 
+# BBS (private messages) configuration
+bbs:
+  enabled: true
+  send_message_expire_days: 7
+  outbox:
+    max_per_sender: 10
+  notify:
+    cooldown_hours: 6
+  session_index_ttl_seconds: 180
+

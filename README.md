@@ -24,27 +24,27 @@ Connect your Meshtastic mesh network with Telegram group chats! 📡💬
   cd meshgram-plus
   ```
 
-2. **Set up a virtual environment:**
+1. **Set up a virtual environment:**
 
   ```bash
   python3 -m venv venv
   source venv/bin/activate
   ```
 
-3. **Install dependencies:**
+1. **Install dependencies:**
 
   ```bash
   pip install -r requirements.txt
   ```
 
-4. **Configure:**
+1. **Configure:**
 
   ```bash
   cp config/example.config.yaml config/config.yaml
   $EDITOR config/config.yaml
   ```
 
-5. **Run:**
+1. **Run:**
 
   ```bash
   python src/meshgram.py
@@ -128,6 +128,61 @@ Send slash commands as normal text from the Meshtastic Text Message App:
 - `/ping`, `/help`, `/travel`, `/ai <prompt>`, `/aireset`, `/admin <cmd>` (for admin_nodes)
 
 Notes: `meshtastic.reply_directly` controls DM vs channel replies; `receive_only_channels` forwards to Telegram but skips triggers and replies on mesh.
+
+## ✉️ BBS: Private Messages (beta)
+
+BBS provides DM-only, store-and-forward private messages with strict 200-byte limits for mesh packets. Messages are always queued first; recipients are nudged to fetch them with `!mi` instead of receiving content automatically.
+
+How it works:
+
+- DM the bot with `!ms <target> <message>` to queue a PM.
+  - Target can be a `!nodeId` or a node short name (case-insensitive exact match).
+  - If there’s exactly one match, the recipient is finalized immediately and gets a nudge: "You have N PM(s). Send !mi".
+  - If there are multiple matches, you’ll be shown a numbered list. Reply with:
+    - `!ms N` to choose a specific recipient, or
+    - `!ms 0` to enable first-seen: the first matching node that appears online will be selected automatically and nudged.
+- When a recipient appears (any non-ringtone packet) and messages are first-seen enabled for them, the recipient is finalized and nudged. Content is never auto-sent; recipients fetch with `!mi`.
+- When a recipient runs `!mi`, messages are marked as delivered (for sender outbox visibility). Inbox shows statuses only as `unread`/`read`.
+
+Constraints and behavior:
+
+- 200-byte limit per mesh packet. The message text you send is capped at 200 UTF‑8 bytes. Inbox read replies use single packets when they fit; otherwise, header and body are sent as two 200B packets.
+- Inbox/Outbox listings are session-based: actions use indices from the last list (`!mi`/`!mo`).
+- Reading (`!mr N`) marks as read even if a mesh ACK isn't observed.
+- Outbox shows status as `queued`, `sent` (recipient ran `!mi`), or `read`. Inbox shows `unread`/`read` only.
+
+Commands (DM to the bot):
+
+- `!h` – BBS help overview
+- `!hm` – Help for private messages
+- `!ms <shortname|!nodeId> <message>` – Queue a PM (200B max)
+- `!mi` – List inbox (date, from short/long/!id, status read/unread)
+- `!mr N` – Read inbox message N (alias: `!mri N`)
+- `!mdi N` – Delete inbox message N (alias: `!md N`)
+- `!mo [-a]` – List outbox (use `-a` to include deleted/history)
+- `!mro N` – Show content of outbox message N
+- `!mdo N` – Delete/unsend outbox message N
+- `!moa` – Delete all read outbox messages
+
+Tips:
+
+- First-seen flow: after `!ms <name> <msg>` with multiple matches, reply `!ms 0` to deliver to the first candidate seen online; otherwise, pick a specific one with `!ms N`.
+- Outbox entries targeting first-seen show candidate node IDs in parentheses and a `[first-seen]` tag until finalized.
+- Non-command DMs to the bot return a short BBS help tip.
+
+Config (excerpt):
+
+```yaml
+bbs:
+  enabled: true
+  send_message_expire_days: 7
+  outbox:
+    max_per_sender: 10
+  notify:
+    cooldown_hours: 6   # general nudge cooldown; first-seen finalization bypasses once
+  session_index_ttl_seconds: 180
+```
+
 
 ## 📜 Project history and credits
 

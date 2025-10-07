@@ -19,6 +19,7 @@ from logging_utils import get_logger, StructuredLogger
 from node_manager import NodeManager
 import re
 from logging_utils import new_id
+from bbs_store import BbsStore
 
 # --- Type Definitions ---
 
@@ -122,6 +123,13 @@ class MessageProcessor:
         except Exception as e:
             self.logger.error(f"Failed to open data/messages.db: {e}", exc_info=True)
             self._msgdb = None
+
+        # BBS store (private messages)
+        try:
+            self.bbs = BbsStore()
+        except Exception as e:
+            self.logger.error(f"Failed to init BbsStore: {e}")
+            self.bbs = None  # type: ignore[assignment]
 
     # No pre-created tables; created lazily on first insert
 
@@ -244,6 +252,163 @@ class MessageProcessor:
                 self.logger.error(f"Error processing Telegram message: {e=}", exc_info=True)
             await asyncio.sleep(0.1)
 
+    # --- BBS helpers ---
+
+    def _is_private_dm_to_bot(self, packet: dict[str, object]) -> bool:
+        """Return True when the incoming mesh text is a DM to the bot node."""
+        try:
+            to_id = packet.get('toId')
+            my_id = getattr(self.meshtastic, 'my_node_id', None)
+            return isinstance(to_id, str) and isinstance(my_id, str) and to_id == my_id
+        except Exception:
+            return False
+
+    async def _bbs_reply(self, sender: str, text: str) -> None:
+        try:
+            # Use chunked sending so longer replies are handled gracefully
+            await self.meshtastic.send_message(text, sender, channel=0)
+        except Exception as e:
+            self.logger.error(f"bbs_reply_error: {e}")
+
+    # --- BBS formatting helpers ---
+    def _bbs_preview(self, text: str, max_chars: int = 80, max_bytes: int = 160) -> str:
+        """Return a short preview of text, limited by chars and bytes, with ellipsis if trimmed."""
+        if not text:
+            return ""
+        s = text.strip().replace('\n', ' ')
+        trimmed = s[:max_chars] if len(s) > max_chars else s
+        b = trimmed.encode('utf-8')
+        if len(b) > max_bytes:
+            b = b[:max_bytes]
+            # avoid splitting in the middle of UTF-8 code point
+            while (b and (b[-1] & 0xC0) == 0x80):
+                b = b[:-1]
+            trimmed = b.decode('utf-8', errors='ignore')
+        if len(trimmed) < len(s):
+            return trimmed + "…"
+        return trimmed
+
+    def _bbs_fmt_from(self, row) -> str:
+        sn = row.sender_short or (row.sender_node_id or "")
+        ln = row.sender_long or ""
+        nid = row.sender_node_id or ""
+        out = f"From {sn}"
+        if ln:
+            out += f" ({ln})"
+        if nid:
+            out += f" [{nid}]"
+        return out
+
+    def _bbs_fmt_to(self, row) -> str:
+        sn = row.recipient_short
+        ln = row.recipient_long or ""
+        nid = row.recipient_node_id or ""
+    # If first-seen (no concrete recipient yet), show shortname and list candidate node IDs instead of long name
+        if not nid:
+            try:
+                if row.candidates_json:
+                    import json
+                    cands = json.loads(row.candidates_json)
+                    if isinstance(cands, list) and cands:
+                        # Preferred shortname from first candidate if missing
+                        if not sn:
+                            c0 = cands[0]
+                            cs = c0.get('short') if isinstance(c0, dict) else None
+                            if isinstance(cs, str) and cs.strip():
+                                sn = cs.strip()
+                        # Build compact list of candidate IDs
+                        ids = []
+                        for c in cands:
+                            if isinstance(c, dict):
+                                cid = c.get('node_id')
+                                if isinstance(cid, str) and cid.strip():
+                                    ids.append(cid.strip())
+                        if ids:
+                            ln = ", ".join(ids)
+            except Exception:
+                pass
+        if not sn:
+            sn = "first-seen"
+        out = f"To {sn}"
+        if ln:
+            out += f" ({ln})"
+        if nid:
+            out += f" [{nid}]"
+        else:
+            out += " [first-seen]"
+        return out
+
+    def _bbs_help_general(self) -> str:
+        # Keep under ~200 bytes
+        try:
+            bbs_on = bool(self.config.get('bbs.enabled', True))
+        except Exception:
+            bbs_on = True
+        if bbs_on:
+            return (
+                "BBS commands (for BOT commands send /help):\n"
+                "!hm – Message help\n"
+            )
+        return f"BBS is disabled. For BOT commands send /help."
+
+    def _bbs_help_pm(self) -> str:
+        # Compact PM help with brief descriptions (<=200 bytes)
+        return (
+            "BBS Message commands:\n"
+            "!ms shortName msg – send msg\n"
+            "!mi – list inbox\n"
+            "!mr N – read\n"
+            "!mdi N – delete inbox\n"
+            "!mo [-a] – list outbox\n"
+            "!mro N – read outbox\n"
+            "!mdo N – delete outbox\n"
+            "!moa – delete outbox read"
+        )
+
+    def _bbs_compose_list(self, header: str, lines: list[str], limit: int = 200) -> str:
+        """Compose a newline-joined list that fits within the byte limit.
+
+        Adds a trailing "... +N more" indicator if not all lines fit.
+        """
+        try:
+            out_parts: list[str] = [header]
+            used = len(header.encode('utf-8'))
+            remaining_lines = len(lines)
+            for i, line in enumerate(lines):
+                # Predict bytes if we add this line
+                candidate = "\n" + line
+                cand_b = len(candidate.encode('utf-8'))
+                if used + cand_b <= limit:
+                    out_parts.append(candidate)
+                    used += cand_b
+                    remaining_lines -= 1
+                    continue
+                # Can't fit this line; add suffix indicator if possible
+                suffix = f"\n... +{remaining_lines} more"
+                if used + len(suffix.encode('utf-8')) <= limit:
+                    out_parts.append(suffix)
+                    used += len(suffix.encode('utf-8'))
+                # If even suffix doesn't fit, ensure header alone fits (fallback)
+                break
+            result = "".join(out_parts)
+            # Final hard trim in case of edge-case overrun
+            b = result.encode('utf-8')
+            if len(b) > limit:
+                # Trim bytes conservatively at codepoint boundaries
+                trimmed = b[:limit]
+                while (trimmed and (trimmed[-1] & 0xC0) == 0x80):
+                    trimmed = trimmed[:-1]
+                result = trimmed.decode('utf-8', errors='ignore')
+            return result
+        except Exception:
+            # Fallback to header only if anything goes wrong
+            hb = header.encode('utf-8')
+            if len(hb) <= limit:
+                return header
+            return hb[:limit].decode('utf-8', errors='ignore')
+
+    # --- Extend text handler for BBS '!' commands in DMs ---
+
     async def process_pending_acks(self) -> None:
         """Periodically remove expired pending ACK entries."""
         while True:
@@ -306,6 +471,471 @@ class MessageProcessor:
         self.is_closing = False
         self._already_closed = True  # type: ignore[attr-defined]
         self.logger.info("processor_stop_complete", instance=self.instance_id)
+
+    # --- BBS command router ---
+
+    async def _handle_bbs_command(self, raw: str, sender: str) -> None:
+        # Global enable switch
+        try:
+            if not bool(self.config.get('bbs.enabled', True)):
+                return
+        except Exception:
+            pass
+        parts = raw.split()
+        cmd = parts[0].lower()
+        args = parts[1:]
+        match cmd:
+            case '!h':
+                await self._bbs_reply(sender, self._bbs_help_general())
+            case '!hm':
+                await self._bbs_reply(sender, self._bbs_help_pm())
+            case '!mi':
+                await self._bbs_cmd_mi(sender)
+            case '!mr' | '!mri':
+                if not args:
+                    await self._bbs_reply(sender, "Usage: !mr N")
+                    return
+                try:
+                    idx = int(args[0])
+                except Exception:
+                    await self._bbs_reply(sender, "Usage: !mr N")
+                    return
+                await self._bbs_cmd_mr(sender, idx)
+            case '!mdi' | '!md':
+                if not args:
+                    await self._bbs_reply(sender, "Usage: !mdi N")
+                    return
+                try:
+                    idx = int(args[0])
+                except Exception:
+                    await self._bbs_reply(sender, "Usage: !mdi N")
+                    return
+                await self._bbs_cmd_mdi(sender, idx)
+            case '!mo':
+                include_arch = any(a == '-a' for a in args)
+                await self._bbs_cmd_mo(sender, include_arch)
+            case '!mro':
+                if not args:
+                    await self._bbs_reply(sender, "Usage: !mro N")
+                    return
+                try:
+                    idx = int(args[0])
+                except Exception:
+                    await self._bbs_reply(sender, "Usage: !mro N")
+                    return
+                await self._bbs_cmd_mro(sender, idx)
+            case '!mdo':
+                if not args:
+                    await self._bbs_reply(sender, "Usage: !mdo N")
+                    return
+                try:
+                    idx = int(args[0])
+                except Exception:
+                    await self._bbs_reply(sender, "Usage: !mdo N")
+                    return
+                await self._bbs_cmd_mdo(sender, idx)
+            case '!moa':
+                await self._bbs_cmd_moa(sender)
+            case '!ms':
+                await self._bbs_cmd_ms(sender, args)
+            case _:
+                await self._bbs_reply(sender, "Unknown BBS command. Send !h or !hm")
+
+    async def _bbs_cmd_mi(self, recipient_node_id: str) -> None:
+        if not self.bbs:
+            return
+        # Before listing, finalize any first-seen messages for this recipient and notify
+        try:
+            await self._bbs_auto_send_first_seen(recipient_node_id)
+        except Exception:
+            pass
+        # Mark queued items as delivered now that recipient asked for inbox
+        try:
+            _ = self.bbs.mark_delivered_for_recipient(recipient_node_id)
+        except Exception:
+            pass
+        rows = self.bbs.list_inbox(recipient_node_id, include_archived=False)
+        if not rows:
+            await self._bbs_reply(recipient_node_id, "Inbox is empty.")
+            return
+        # Build session and formatted list (no content)
+        pm_ids = [r.id for r in rows]
+        ttl = int(self.config.get('bbs.session_index_ttl_seconds', 180))
+        session_id = self.bbs.create_session(recipient_node_id, 'inbox', ttl, pm_ids)
+        header = "Inbox (latest first):"
+        lines: list[str] = []
+        for idx, r in enumerate(rows, start=1):
+            # Inbox shows only 'unread' or 'read' (ignore delivered_at here)
+            status = 'read' if (r.read_at or r.status == 'read') else 'unread'
+            date = r.created_at.split(' ')[0] if r.created_at else ''
+            from_short = r.sender_short or (r.sender_node_id or '')
+            from_long = r.sender_long or ''
+            lines.append(f"[{idx}] {date} — From {from_short} ({from_long}, {r.sender_node_id}) — status={status}")
+        payload = self._bbs_compose_list(header, lines)
+        payload += f"\nsend !mr N to read, !mdi N to delete"
+        await self._bbs_reply(recipient_node_id, payload)
+
+    async def _bbs_cmd_mr(self, recipient_node_id: str, idx: int) -> None:
+        if not self.bbs:
+            return
+        pm_id = self.bbs.resolve_session_index(recipient_node_id, 'inbox', idx)
+        if not pm_id:
+            await self._bbs_reply(recipient_node_id, "No active list. Send !mi first.")
+            return
+        row = self.bbs.get_pm(pm_id)
+        if not row:
+            await self._bbs_reply(recipient_node_id, "Message not found.")
+            return
+        # Mark read regardless of ACK
+        self.bbs.mark_read(pm_id)
+        # Send header + content; prefer single packet if it fits, else send two packets
+        try:
+            from_short = row.sender_short or (row.sender_node_id or "")
+            from_long = row.sender_long or ""
+            from_id = row.sender_node_id or ""
+            header = f"From {from_short}"
+            if from_long:
+                header += f" ({from_long})"
+            if from_id:
+                header += f" [{from_id}]"
+            full = f"{header}\n{row.text}" if row.text else header
+            if len(full.encode('utf-8')) <= 200:
+                await self.meshtastic.send_short_message(full, recipient_node_id, channel=0)
+            else:
+                await self.meshtastic.send_short_message(header, recipient_node_id, channel=0)
+                await self.meshtastic.send_short_message(row.text, recipient_node_id, channel=0)
+        except Exception as e:
+            await self._bbs_reply(recipient_node_id, f"Failed to send content: {e}")
+
+    async def _bbs_cmd_mdi(self, recipient_node_id: str, idx: int) -> None:
+        if not self.bbs:
+            return
+        pm_id = self.bbs.resolve_session_index(recipient_node_id, 'inbox', idx)
+        if not pm_id:
+            await self._bbs_reply(recipient_node_id, "No active list. Send !mi first.")
+            return
+        row = self.bbs.get_pm(pm_id)
+        if not row:
+            await self._bbs_reply(recipient_node_id, "Message not found.")
+            return
+        info = f"{self._bbs_fmt_from(row)} — '{self._bbs_preview(row.text)}'"
+        self.bbs.archive(pm_id)
+        await self._bbs_reply(recipient_node_id, f"Deleted inbox: {info}")
+
+    async def _bbs_cmd_mo(self, sender_node_id: str, include_archived: bool) -> None:
+        if not self.bbs:
+            return
+        rows = self.bbs.list_outbox(sender_node_id, include_archived=include_archived)
+        if not rows:
+            await self._bbs_reply(sender_node_id, "Outbox is empty.")
+            return
+        pm_ids = [r.id for r in rows]
+        ttl = int(self.config.get('bbs.session_index_ttl_seconds', 180))
+        _ = self.bbs.create_session(sender_node_id, 'outbox', ttl, pm_ids)
+        header = "Outbox (latest first):"
+        lines: list[str] = []
+        for idx, r in enumerate(rows, start=1):
+            date = r.created_at.split(' ')[0] if r.created_at else ''
+            status_label = 'read' if r.read_at else ('sent' if getattr(r, 'delivered_at', None) else (r.status or 'queued'))
+            lines.append(f"[{idx}] {date} — {self._bbs_fmt_to(r)} — status={status_label}")
+        payload = self._bbs_compose_list(header, lines)
+        await self._bbs_reply(sender_node_id, payload)
+
+    async def _bbs_cmd_mro(self, sender_node_id: str, idx: int) -> None:
+        if not self.bbs:
+            return
+        pm_id = self.bbs.resolve_session_index(sender_node_id, 'outbox', idx)
+        if not pm_id:
+            await self._bbs_reply(sender_node_id, "No active list. Send !mo first.")
+            return
+        row = self.bbs.get_pm(pm_id)
+        if not row:
+            await self._bbs_reply(sender_node_id, "Message not found.")
+            return
+        await self._bbs_reply(sender_node_id, row.text)
+
+    async def _bbs_cmd_mdo(self, sender_node_id: str, idx: int) -> None:
+        if not self.bbs:
+            return
+        pm_id = self.bbs.resolve_session_index(sender_node_id, 'outbox', idx)
+        if not pm_id:
+            await self._bbs_reply(sender_node_id, "No active list. Send !mo first.")
+            return
+        row = self.bbs.get_pm(pm_id)
+        if not row:
+            await self._bbs_reply(sender_node_id, "Message not found.")
+            return
+        # Only allow deleting own outbox entries
+        if row.sender_node_id != sender_node_id:
+            await self._bbs_reply(sender_node_id, "Not allowed.")
+            return
+        info = f"{self._bbs_fmt_to(row)} — '{self._bbs_preview(row.text)}' (was {row.status})"
+        self.bbs.archive(pm_id)
+        await self._bbs_reply(sender_node_id, f"Deleted outbox: {info}")
+
+    async def _bbs_cmd_moa(self, sender_node_id: str) -> None:
+        if not self.bbs:
+            return
+        n = self.bbs.archive_all_read_for_sender(sender_node_id)
+        await self._bbs_reply(sender_node_id, f"Deleted {n} read message(s)")
+
+    async def _bbs_cmd_ms(self, sender_node_id: str, args: list[str]) -> None:
+        if not self.bbs:
+            return
+        # Two forms:
+        # 1) !ms <target> <message>
+        # 2) !ms <index>    (after we presented candidates for this sender)
+        if not args:
+            await self._bbs_reply(sender_node_id, "Usage: !ms <shortname|!nodeid> <message> | !ms N")
+            return
+        # Check if this is a numeric selection first
+        if len(args) == 1 and args[0].isdigit():
+            idx = int(args[0])
+            await self._bbs_cmd_ms_select(sender_node_id, idx)
+            return
+        # Otherwise treat as new send request
+        target = args[0]
+        text = " ".join(args[1:]).strip()
+        if not text:
+            await self._bbs_reply(sender_node_id, "Message is empty")
+            return
+        # Enforce 200-byte limit for stored payloads (readback uses single packet)
+        if len(text.encode('utf-8')) > 200:
+            await self._bbs_reply(sender_node_id, "Message too long (200B max)")
+            return
+        # Quota enforcement
+        try:
+            max_per = int(self.config.get('bbs.outbox.max_per_sender', 10))
+        except Exception:
+            max_per = 10
+        queued = self.bbs.count_queued_for_sender(sender_node_id)
+        if queued >= max_per:
+            await self._bbs_reply(sender_node_id, f"Outbox full ({queued}/{max_per})")
+            return
+        # Resolve recipient: accept literal !nodeid or try to match by shortName (case-insensitive exact)
+        recipient_node_id: str | None = None
+        recipient_short: str | None = None
+        recipient_long: str | None = None
+        candidates: list[dict[str, str]] = []
+        if target.startswith('!') and len(target) > 1:
+            # Treat as node id
+            recipient_node_id = target
+            n = self.node_manager.get_node(recipient_node_id)
+            if n:
+                recipient_short = n.get('shortName')  # type: ignore[index]
+                recipient_long = n.get('longName')   # type: ignore[index]
+        else:
+            # Exact shortName match among known nodes (case-insensitive)
+            tnorm = target.strip().lower()
+            for nid, n in self.node_manager.get_all_nodes().items():
+                try:
+                    sn = n.get('shortName')  # type: ignore[index]
+                    ln = n.get('longName')   # type: ignore[index]
+                    if isinstance(sn, str) and sn.strip() and sn.strip().lower() == tnorm:
+                        candidates.append({'node_id': nid, 'short': sn.strip(), 'long': (ln.strip() if isinstance(ln, str) else '')})
+                except Exception:
+                    continue
+            if len(candidates) == 1:
+                c = candidates[0]
+                recipient_node_id = c['node_id']
+                recipient_short = c['short']
+                recipient_long = c['long']
+        # Insert queued PM
+        try:
+            import json
+            pm_id = self.bbs.insert_pm(
+                sender_node_id=sender_node_id,
+                sender_short=(self.node_manager.get_node(sender_node_id) or {}).get('shortName') if self.node_manager.get_node(sender_node_id) else None,  # type: ignore[index]
+                sender_long=(self.node_manager.get_node(sender_node_id) or {}).get('longName') if self.node_manager.get_node(sender_node_id) else None,  # type: ignore[index]
+                sender_source='mesh',
+                recipient_node_id=recipient_node_id,
+                recipient_short=recipient_short,
+                recipient_long=recipient_long,
+                candidates_json=(json.dumps(candidates) if candidates and len(candidates) != 1 else None),
+                text=text,
+            )
+        except Exception as e:
+            await self._bbs_reply(sender_node_id, f"Store failed: {e}")
+            return
+        # Acknowledge and, if ambiguous, present candidate list with selection prompt
+        if recipient_node_id:
+            label = recipient_short or recipient_node_id
+            await self._bbs_reply(sender_node_id, f"Queued to {label} [{recipient_node_id}] — '{self._bbs_preview(text)}'")
+            # Immediately notify the recipient to fetch inbox (bypass cooldown)
+            try:
+                unread = self.bbs.unread_count_for_recipient(recipient_node_id)
+                if unread > 0:
+                    _ = self.bbs.mark_all_notified(recipient_node_id)
+                    await self.meshtastic.send_short_message(f"You have {unread} PM(s). Send !mi", recipient_node_id, channel=0)
+            except Exception:
+                pass
+            return
+        if candidates:
+            # Present selection list and create a session tied to this outbox PM id for this sender
+            header = "Select recipient: 0=first-seen"
+            lines = []
+            idx_map_pmids: list[int] = []
+            for i, c in enumerate(candidates, start=1):
+                nid = c.get('node_id', '')
+                sn = c.get('short', '')
+                ln = c.get('long', '')
+                lines.append(f"[{i}] {sn} ({ln}, {nid})")
+                idx_map_pmids.append(pm_id)  # same pm, selection will finalize recipient
+            # We use an 'outbox' kind session, but it references this single pm_id for all indices
+            ttl = int(self.config.get('bbs.session_index_ttl_seconds', 180))
+            _ = self.bbs.create_session(sender_node_id, 'outbox', ttl, idx_map_pmids)
+            payload = self._bbs_compose_list(header, lines)
+            await self._bbs_reply(sender_node_id, payload + "\nReply: !ms N")
+            return
+        # Fallback: unknown target — store as first-seen but require explicit confirmation (0) to enable delivery
+        await self._bbs_reply(sender_node_id, f"Select recipient: 0=first-seen\nReply: !ms 0")
+
+    async def _bbs_cmd_ms_select(self, sender_node_id: str, idx: int) -> None:
+        """Handle '!ms N' after an ambiguous target list, including 0 for first-seen."""
+        if not self.bbs:
+            return
+        if idx < 0:
+            await self._bbs_reply(sender_node_id, "Invalid index")
+            return
+        if idx == 0:
+            # User chose first-seen; enable auto-delivery for the most recent queued ambiguous PM for this sender
+            # Find latest queued PM without recipient for this sender and enable first-seen
+            try:
+                rows = self.bbs.list_outbox(sender_node_id, include_archived=False)
+                target_pm = next((r for r in rows if not r.recipient_node_id and r.status == 'queued'), None)
+                if target_pm:
+                    self.bbs.set_first_seen_enabled(target_pm.id, True)
+                    await self._bbs_reply(sender_node_id, "ok: first-seen enabled")
+                else:
+                    await self._bbs_reply(sender_node_id, "No pending message to mark first-seen.")
+            except Exception as e:
+                await self._bbs_reply(sender_node_id, f"Failed: {e}")
+            return
+        # Resolve to the most recent 'outbox' session index
+        pm_id = self.bbs.resolve_session_index(sender_node_id, 'outbox', idx)
+        if not pm_id:
+            await self._bbs_reply(sender_node_id, "No active selection. Send !ms <tgt> <msg> again.")
+            return
+        # We need to re-resolve candidates from the original text to fetch the chosen index
+        row = self.bbs.get_pm(pm_id)
+        if not row or not row.candidates_json:
+            await self._bbs_reply(sender_node_id, "No candidates for selection.")
+            return
+        try:
+            import json
+            cands = json.loads(row.candidates_json)
+        except Exception:
+            await self._bbs_reply(sender_node_id, "Invalid candidates data.")
+            return
+        if not isinstance(cands, list) or idx < 1 or idx > len(cands):
+            await self._bbs_reply(sender_node_id, "Invalid index")
+            return
+        chosen = cands[idx - 1]
+        nid = chosen.get('node_id')
+        sn = chosen.get('short')
+        ln = chosen.get('long')
+        if not isinstance(nid, str) or not nid:
+            await self._bbs_reply(sender_node_id, "Invalid selection")
+            return
+        # Finalize recipient on that PM
+        try:
+            self.bbs.update_recipient(pm_id, node_id=nid, short=sn, long=ln)
+        except Exception as e:
+            await self._bbs_reply(sender_node_id, f"Finalize failed: {e}")
+            return
+        label = sn or nid
+        await self._bbs_reply(sender_node_id, f"Recipient set: {label} [{nid}]")
+        # Immediately notify the chosen recipient to fetch inbox (bypass cooldown)
+        try:
+            unread = self.bbs.unread_count_for_recipient(nid)
+            if unread > 0:
+                _ = self.bbs.mark_all_notified(nid)
+                await self.meshtastic.send_short_message(f"You have {unread} PM(s). Send !mi", nid, channel=0)
+        except Exception:
+            pass
+
+    # --- Notification hook: on inbound packets, detect appearances and nudge ---
+    async def _bbs_maybe_notify_on_appearance(self, from_id: str) -> None:
+        if not self.bbs:
+            return
+        try:
+            if not bool(self.config.get('bbs.enabled', True)):
+                return
+        except Exception:
+            pass
+        # First-seen finalize for this appearing node
+        finalized = 0
+        try:
+            finalized = await self._bbs_auto_send_first_seen(from_id)
+        except Exception:
+            finalized = 0
+
+        # Only notify the appearing node about its unread count, with cooldown
+        unread = self.bbs.unread_count_for_recipient(from_id)
+        if unread <= 0:
+            return
+        # If we just finalized first-seen items, bypass cooldown once
+        bypass_cooldown = finalized > 0
+        ok_to_notify = True
+        if not bypass_cooldown:
+            # Cooldown check
+            try:
+                cooldown_h = float(self.config.get('bbs.notify.cooldown_hours', 6))
+            except Exception:
+                cooldown_h = 6.0
+            last = self.bbs.latest_notified_at(from_id)
+            if last:
+                try:
+                    from datetime import datetime as _dt
+                    last_dt = _dt.strptime(last, "%Y-%m-%d %H:%M:%S%z")
+                    from datetime import timezone as _tz, timedelta as _td
+                    if (_dt.now(_tz.utc) - last_dt) < _td(hours=cooldown_h):
+                        ok_to_notify = False
+                except Exception:
+                    pass
+        if not ok_to_notify:
+            return
+        # Mark queued as notified and send a nudge
+        changed = self.bbs.mark_all_notified(from_id)
+        if changed <= 0:
+            return
+        try:
+            msg = f"You have {unread} PM(s). Send !mi"
+            await self.meshtastic.send_short_message(msg, from_id, channel=0)
+        except Exception:
+            pass
+
+    async def _bbs_auto_send_first_seen(self, node_id: str) -> int:
+        """Finalize and deliver any queued first-seen PMs for this node.
+
+        Returns number of messages delivered.
+        """
+        if not self.bbs:
+            return 0
+        try:
+            rows = self.bbs.find_queued_first_seen_for_node(node_id)
+        except Exception:
+            rows = []
+        delivered = 0
+        for r in rows:
+            try:
+                self.bbs.update_recipient(r.id, node_id=node_id, short=None, long=None)
+                delivered += 1
+                # Optional: inform sender that delivery occurred
+                try:
+                    snd = r.sender_node_id
+                    if isinstance(snd, str) and snd:
+                        await self.meshtastic.send_short_message(
+                            f"{node_id} seen: PM queued. They will be nudged to !mi. '{self._bbs_preview(r.text)}'",
+                            snd,
+                            channel=0,
+                        )
+                except Exception:
+                    pass
+            except Exception:
+                # leave queued; retry on next appearance or !mi
+                pass
+        return delivered
 
     # --- AI Helpers ---
     async def _get_ai_client(self):
@@ -424,6 +1054,15 @@ class MessageProcessor:
         portnum = packet.get('decoded', {}).get('portnum', '')  # type: ignore[index, attr-defined]
         handler_name = f"handle_{portnum.lower()}" if isinstance(portnum, str) else f"handle_{portnum}"
         handler = getattr(self, handler_name, None)
+
+        # BBS appearance-based notification: treat any non-ringtone inbound packet as an appearance signal
+        try:
+            fid = packet.get('fromId')
+            local_id = getattr(self.meshtastic, 'my_node_id', None)
+            if isinstance(fid, str) and fid and fid != local_id and not is_ringtone:
+                _ = asyncio.create_task(self._bbs_maybe_notify_on_appearance(fid))
+        except Exception:
+            pass
 
         if handler:
             # if not (portnum == 'ADMIN_APP' and 'getRingtoneResponse' in packet.get('decoded', {}).get('admin', {})):
@@ -584,7 +1223,7 @@ class MessageProcessor:
             pass
 
         receive_only_channels = self.config.get('meshtastic.receive_only_channels', [])  # type: ignore[assignment]
-        # Apply config-driven triggers: transform text and send any trigger replies
+    # Apply config-driven triggers: transform text and send any trigger replies
         if channel_num not in receive_only_channels and isinstance(text, str):
             try:
                 text, trigger_replies = self._run_meshtastic_triggers(
@@ -643,6 +1282,14 @@ class MessageProcessor:
             except Exception:
                 pass
         
+        # BBS: handle DM-only '!' commands before slash commands
+        if self.bbs and isinstance(text, str) and text.startswith('!') and self._is_private_dm_to_bot(packet):
+            try:
+                await self._handle_bbs_command(text.strip(), sender)
+            except Exception as e:
+                self.logger.error(f"bbs_cmd_error: {e}", exc_info=True)
+            return
+
         is_command: str | None = None
         if channel_num not in receive_only_channels:
             if isinstance(text, str) and text.startswith('/'):
@@ -675,6 +1322,14 @@ class MessageProcessor:
                     except Exception as e:
                         self.logger.error(f"Mesh command '/{cmd}' failed: {e}", exc_info=True)
                 # If no handler, fall through and forward the original text
+
+        # DM fallback: send help when a DM to the bot is not a command
+        if self._is_private_dm_to_bot(packet) and isinstance(text, str) and not text.startswith('!') and not text.startswith('/'):
+            try:
+                await self.meshtastic.send_short_message(self._bbs_help_general(), sender, channel=0)
+            except Exception:
+                pass
+            return
 
         if is_command:
             self.logger.info("mesh_command", instance=self.instance_id, bridge_id=bridge_id, command=is_command, from_id=sender, to_id=recipient, from_short=from_short, to_short=to_short, hops_away=hops_away, hop_limit=hops_limit, hop_start=hops_start, rssi=rssi, snr=snr, mqtt=mqtt)
@@ -1271,7 +1926,7 @@ class MessageProcessor:
             cmds_admin = "• /admin - admin commands"
             
         lines = [
-            "Mesh commands:\n",
+            "Bot commands (for BBS commands send !h):\n",
             f"{cmds_ping}\n",
             f"{cmds_travel}\n",
             f"{cmds_ai}\n",

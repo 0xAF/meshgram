@@ -347,6 +347,38 @@ class MeshtasticInterface:
         await self.outgoing_queue.put(OutgoingJob(chunks=chunks, recipient=recipient, channel=channel, result_fut=fut, attempts=0))
         return await fut
 
+    async def send_short_message(self, text: str, recipient: str, channel: int | None = 0) -> int:
+        """Send a single short text packet (no chunking), enforcing 200-byte UTF-8 limit.
+
+        Returns message id or -1 on failure. Intended for brief system notices and BBS payloads.
+        """
+        if not text or not recipient:
+            raise ValueError("Text and recipient must not be empty")
+        encoded = text.encode('utf-8')
+        if len(encoded) > 200:
+            raise ValueError("Short message exceeds 200-byte limit")
+        try:
+            iface = self._require_interface()
+            if channel is None:
+                result = await asyncio.to_thread(iface.sendText, text, destinationId=recipient)  # type: ignore[attr-defined]
+            else:
+                result = await asyncio.to_thread(iface.sendText, text, destinationId=recipient, channelIndex=int(channel))  # type: ignore[attr-defined]
+            msg_id = getattr(result, 'id', None)
+            try:
+                _n = self.node_manager.get_node(recipient)
+                _rsn = _n.get('shortName') if _n else None
+                _rln = _n.get('longName') if _n else None
+            except Exception:
+                _rsn = _rln = None
+            self.logger.info("mt_send_short", instance=self.instance_id, recipient=recipient, recipient_sn=_rsn, recipient_ln=_rln, channel=channel, message_id=msg_id)
+            return int(msg_id) if isinstance(msg_id, int) else -1
+        except Exception as e:
+            try:
+                self.logger.error("mt_send_short_error", instance=self.instance_id, recipient=recipient, channel=channel, error=str(e))
+            except Exception:
+                pass
+            return -1
+
     async def process_outgoing_messages(self) -> None:
         """Background worker: send queued chunked messages with configured delay."""
         while True:
@@ -792,31 +824,25 @@ class MeshtasticInterface:
                         pass
 
     def getNodeInfo(self):
-        """Lightweight health probe: prefer getMyNodeInfo; fallback to ringtone call.
+        """Lightweight health probe: use ringtone call only.
 
-        In some environments (e.g., containers), stdout/stderr capture from the
-        meshtastic library is unreliable. Using getMyNodeInfo() is more stable.
+        getMyNodeInfo() is not a reliable health indicator (can return stale
+        data). The ringtone probe exercises the control path and fails when the
+        link is unhealthy.
         """
-        try:
-            # Primary: fetch node info and validate user.id presence
-            info = self.interface.getMyNodeInfo()
-            if isinstance(info, dict):
-                uid = info.get('user', {}).get('id') if isinstance(info.get('user'), dict) else None
-                if isinstance(uid, str) and uid:
-                    return "OK"
-        except Exception as e:
-            # Log at debug; we will try fallback before raising
-            try:
-                self.logger.debug(f"getMyNodeInfo probe failed: {e}")
-            except Exception:
-                pass
-        # Fallback: attempt a no-op action on localNode that should succeed when healthy
         try:
             # If this call doesn't raise, consider the link healthy
             self.interface.localNode.get_ringtone()  # type: ignore[attr-defined]
+            try:
+                self.logger.debug("mt_health_probe_ringtone_ok", instance=self.instance_id)
+            except Exception:
+                pass
             return "OK"
         except (socket.error, BrokenPipeError, ConnectionResetError, Exception) as e:
-            self.logger.error(f"Error retrieving node info: {e}")
+            try:
+                self.logger.error(f"mt_health_probe_ringtone_error: {e}")
+            except Exception:
+                pass
             raise e  # Propagate the error to handle reconnection
 
     async def periodic_health_check(self) -> None:
