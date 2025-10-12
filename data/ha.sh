@@ -56,12 +56,24 @@ while IFS=": " read -r key value; do
     echo "${key_map[$key]}: $value"
   fi
 done < <(
-  echo "$json_output" |
-  jq -r '.[] | select(.entity_id | test("emax")) | 
-    if (.entity_id | sub("sensor.emax_w6_4_1613_"; "") == "wind_speed") 
-    then "\(.entity_id | sub("sensor.emax_w6_4_1613_"; "")): \((.state | tonumber) / 3.6)" 
-    else "\(.entity_id | sub("sensor.emax_w6_4_1613_"; "")): \(.state)" 
-    end'
+  {
+    echo "$json_output" |
+    jq -r '
+      .[]
+      | select(.entity_id | test("emax"))
+      | (.entity_id | sub("sensor.emax_w6_4_1613_"; "")) as $k
+      | if $k == "outside_luminance" then empty
+        elif $k == "wind_speed" then "\($k): \((.state | tonumber) / 3.6)"
+        else "\($k): \(.state)"
+        end
+    ';
+    echo "$json_output" |
+    jq -r '
+      .[]
+      | select(.entity_id == "sensor.rainsensor_osvetenost")
+      | "outside_luminance: \(.state)"
+    ';
+  }
 )
 
 # https://buf.build/meshtastic/protobufs/file/master:meshtastic/telemetry.proto
