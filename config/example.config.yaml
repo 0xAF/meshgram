@@ -82,6 +82,10 @@ meshtastic:
   #   - reconnect: keep trying to reconnect
   on_disconnect: exit
 
+  # Health check policy: require this many consecutive failures before taking action
+  # (reconnect or exit depending on on_disconnect). Minimum 1.
+  health_max_failures: 3
+
   # Optional regex-based triggers to transform inbound mesh messages into commands
   # Each rule has:
   #   key: regex pattern (Python re, case-insensitive)

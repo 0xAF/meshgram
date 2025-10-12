@@ -75,6 +75,9 @@ class MeshtasticInterface:
     _reconnect_attempts: deque[datetime]
     _reconnect_storm_triggered: bool
     _send_in_progress: asyncio.Event
+    # Health-check failure tracking
+    health_failures: int
+    health_max_failures: int
 
     def __init__(self, config: ConfigManager, on_reconnect_storm: Optional[Callable[[], Awaitable[None]]] = None) -> None:
         """Initialize interface state but do not connect yet."""
@@ -100,6 +103,16 @@ class MeshtasticInterface:
         self._reconnect_attempts = deque()
         self._reconnect_storm_triggered = False
         self._send_in_progress = asyncio.Event()
+        # Health-check policy: require N consecutive failures before action
+        try:
+            hmf = self.config.get('meshtastic.health_max_failures', 3)
+            hmf = int(hmf) if not isinstance(hmf, int) else hmf
+            if hmf < 1:
+                hmf = 1
+            self.health_max_failures = hmf
+        except Exception:
+            self.health_max_failures = 3
+        self.health_failures = 0
         # Exit strategy on serial disconnect/health failures (configurable)
         # New key: meshtastic.on_disconnect: 'exit' | 'reconnect' (default: 'exit')
         # Back-compat: meshtastic.exit_on_disconnect: bool
@@ -861,13 +874,62 @@ class MeshtasticInterface:
             if self.interface is None:
                 self.logger.warning("Meshtastic interface is not initialized, attempting to reconnect...")
                 self.logger.warning("mt_health_missing_interface", instance=self.instance_id)
-                await self.reconnect()
+                # Treat missing interface as a health failure
+                self.health_failures += 1
+                try:
+                    self.logger.warning("mt_health_fail_inc", instance=self.instance_id, failures=self.health_failures, threshold=self.health_max_failures)
+                except Exception:
+                    pass
+                if self.health_failures >= self.health_max_failures:
+                    await self.reconnect()
+                    # After taking action, reset the counter so we require fresh failures
+                    self.health_failures = 0
                 continue
             try:
                 info = await asyncio.wait_for(asyncio.to_thread(self.getNodeInfo), timeout=5)
                 if info == -1 or info is None:
-                    self.logger.error("Health check failed: Invalid or no node info received. Attempting to reconnect...")
+                    self.logger.error("Health check failed: Invalid or no node info received.")
                     self.logger.error("mt_health_invalid", instance=self.instance_id)
+                    self.health_failures += 1
+                    try:
+                        self.logger.warning("mt_health_fail_inc", instance=self.instance_id, failures=self.health_failures, threshold=self.health_max_failures)
+                    except Exception:
+                        pass
+                    if self.health_failures >= self.health_max_failures:
+                        if self.exit_on_disconnect:
+                            try:
+                                self.logger.error("mt_health_fatal_exit", instance=self.instance_id)
+                            except Exception:
+                                pass
+                            if self.on_reconnect_storm is not None:
+                                try:
+                                    await self.on_reconnect_storm()
+                                    return
+                                except Exception:
+                                    pass
+                            os._exit(1)
+                        await self.reconnect()
+                        self.health_failures = 0
+                    continue
+                self.logger.debug(f"Health check = {info}")
+                self.logger.info("mt_health_ok", instance=self.instance_id)
+                # success: reset consecutive failure counter
+                if self.health_failures:
+                    self.health_failures = 0
+            except Exception as e:
+                if isinstance(e, TimeoutError):
+                    self.logger.error("Health check failed: Timeout while retrieving node info.")
+                    self.logger.error("mt_health_timeout", instance=self.instance_id)
+                else:
+                    self.logger.error(f"Health check failed: {e}", exc_info=True)
+                    self.logger.error("mt_health_error", instance=self.instance_id, error=str(e))
+                # count consecutive failures and only act after threshold
+                self.health_failures += 1
+                try:
+                    self.logger.warning("mt_health_fail_inc", instance=self.instance_id, failures=self.health_failures, threshold=self.health_max_failures)
+                except Exception:
+                    pass
+                if self.health_failures >= self.health_max_failures:
                     if self.exit_on_disconnect:
                         try:
                             self.logger.error("mt_health_fatal_exit", instance=self.instance_id)
@@ -881,29 +943,8 @@ class MeshtasticInterface:
                                 pass
                         os._exit(1)
                     await self.reconnect()
-                    continue
-                self.logger.debug(f"Health check = {info}")
-                self.logger.info("mt_health_ok", instance=self.instance_id)
-            except Exception as e:
-                if isinstance(e, TimeoutError):
-                    self.logger.error("Health check failed: Timeout while retrieving node info.")
-                    self.logger.error("mt_health_timeout", instance=self.instance_id)
-                else:
-                    self.logger.error(f"Health check failed: {e}", exc_info=True)
-                    self.logger.error("mt_health_error", instance=self.instance_id, error=str(e))
-                if self.exit_on_disconnect:
-                    try:
-                        self.logger.error("mt_health_fatal_exit", instance=self.instance_id)
-                    except Exception:
-                        pass
-                    if self.on_reconnect_storm is not None:
-                        try:
-                            await self.on_reconnect_storm()
-                            return
-                        except Exception:
-                            pass
-                    os._exit(1)
-                await self.reconnect()
+                    # reset failures after we take recovery action
+                    self.health_failures = 0
             await asyncio.sleep(HEALTH_CHECK_INTERVAL_SECONDS)  # Check periodically
 
     async def periodic_telemetry_report(self) -> None:
