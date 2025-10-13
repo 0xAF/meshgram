@@ -50,6 +50,7 @@ Connect your Meshtastic mesh network with Telegram group chats! 📡💬
   cp config/example.meshtastic.yaml  config/meshtastic.yaml
   cp config/example.channels.yaml    config/channels.yaml
   cp config/example.logging.yaml     config/logging.yaml
+  cp config/example.telemetry.yaml   config/telemetry.yaml
   cp config/example.ai.yaml          config/ai.yaml
   cp config/example.bbs.yaml         config/bbs.yaml
   cp config/example.triggers.yaml    config/triggers.yaml
@@ -75,6 +76,7 @@ Split example files (copy and adapt):
 - `config/example.logging.yaml` → `config/logging.yaml`: per‑lib levels, syslog/file options
 - `config/example.ai.yaml` → `config/ai.yaml`: provider (ollama/openai), model/base_url, system prompt, tools
 - `config/example.bbs.yaml` → `config/bbs.yaml`: BBS/private message settings
+- `config/example.telemetry.yaml` → `config/telemetry.yaml`: telemetry runner settings
 
 ### Quickstart (layered config + env)
 

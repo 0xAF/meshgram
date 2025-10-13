@@ -1,0 +1,7 @@
+telemetry:
+  # Periodically run a script and publish its metrics to the mesh
+  environment_enabled: false
+  # Path to the script to execute
+  environment_script: "./data/ha.sh"
+  # Seconds between telemetry runs
+  environment_send_interval: 300
