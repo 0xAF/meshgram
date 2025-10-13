@@ -1,1 +1,10 @@
+# Ignore all non-example YAML config files in this folder
+*.yaml
+!example.*.yaml
+
+# Also ignore optional local overlay explicitly (kept for clarity)
 config.yaml
+config.local.yaml
+
+# Ignore YAML backup variants
+*.yaml_

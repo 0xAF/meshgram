@@ -1,0 +1,19 @@
+channels:
+  - "LongFast"   # 0
+  - "Bulgaria"   # 1
+
+default_channel_id: 0
+ignored_channels: []
+receive_only_channels: []
+
+reports:
+  telemetry: true
+  location: false
+  nodes: true
+
+topics:
+  telemetry: 907
+  location: 909
+  nodes: 918
+  channel0: 914
+  channel1: 911

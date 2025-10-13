@@ -403,7 +403,8 @@ class MeshtasticInterface:
                 channel = job.channel
                 explicit_channel = channel is not None
                 if channel is None:
-                    channel = self.config.get('meshtastic.default_channel_id', 0)
+                    # Prefer top-level default_channel_id, fallback to legacy meshtastic.default_channel_id
+                    channel = self.config.get('default_channel_id', self.config.get('meshtastic.default_channel_id', 0))
                     if not isinstance(channel, int):
                         channel = 0
                 iface = self._require_interface()

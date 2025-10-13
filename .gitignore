@@ -50,4 +50,5 @@ nodes.json
 data/messages.db*
 data/cache.db*
 data/bbs.db*
+config/config.yaml_
 

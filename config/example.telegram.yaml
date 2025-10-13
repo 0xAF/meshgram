@@ -1,0 +1,11 @@
+telegram:
+  bot_token: "${TELEGRAM_BOT_TOKEN}"
+  chat_id: -1001234567890
+  authorized_users:
+    - 1111111111
+  enable_message_forwarding: false
+  use_topics: false
+  raw_markdown: false
+  ai_enabled: false
+  notify_on_start: true
+  startup_topic: "default"

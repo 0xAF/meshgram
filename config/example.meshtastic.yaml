@@ -1,0 +1,22 @@
+meshtastic:
+  connection_type: serial
+  device: "/dev/ttyACM0"
+  # device: "192.168.0.100:4403"
+  default_node_id: "^all"
+  send_delay_ms: 200
+  max_send_chunks: 5
+  truncation_notice_template: "\n...and {omitted} more chunk(s) not sent: message too large"
+  admin_nodes:
+    - '1b8c7774'
+  notify_admins_on_start: true
+  commands:
+    ping: true
+    help: true
+    ai: false
+    travel: true
+  travel_template: "✈️ Safe travels — signal: {signal_emoji} {signal}, hops: {hops_away}. Carry a power bank and share your route in FB groups."
+  reply_directly: false
+  ai_enabled: false
+  on_disconnect: exit
+  health_max_failures: 3
+  node_info_link: "https://meshmap.net/{node_id}"

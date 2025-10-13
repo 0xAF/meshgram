@@ -4,3 +4,4 @@ pip
 python-telegram-bot
 sqlitedict
 httpx
+pydantic>=2.7

@@ -1147,7 +1147,7 @@ class MessageProcessor:
             channel_num: int = int(raw_channel)  # type: ignore[arg-type]
         except Exception:
             channel_num = 0
-        ignored_channels = self.config.get('meshtastic.ignored_channels', [])  # type: ignore[assignment]
+        ignored_channels = self.config.get('ignored_channels', self.config.get('meshtastic.ignored_channels', []))  # type: ignore[assignment]
         # ignore messages and commands on ignored channels
         if channel_num in ignored_channels:
             return
@@ -1222,8 +1222,8 @@ class MessageProcessor:
         except Exception:
             pass
 
-        receive_only_channels = self.config.get('meshtastic.receive_only_channels', [])  # type: ignore[assignment]
-    # Apply config-driven triggers: transform text and send any trigger replies
+        receive_only_channels = self.config.get('receive_only_channels', self.config.get('meshtastic.receive_only_channels', []))  # type: ignore[assignment]
+        # Apply config-driven triggers: transform text and send any trigger replies
         if channel_num not in receive_only_channels and isinstance(text, str):
             try:
                 text, trigger_replies = self._run_meshtastic_triggers(

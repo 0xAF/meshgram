@@ -159,7 +159,8 @@ def convert_units_inplace(data: Dict[str, Any], unit: str) -> None:
             data["temperature_f"] = round((t_c * 9 / 5) + 32, 1)
         if isinstance(data.get("wind_speed"), (int, float)):
             ws_ms = float(data["wind_speed"])  # type: ignore[index]
-            data["wind_speed_mph"] = round(ws_ms * 2.23693629, 2)
+            # Preserve full precision for tests; callers can format for display
+            data["wind_speed_mph"] = ws_ms * 2.23693629
     except Exception:
         pass
 

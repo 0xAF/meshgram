@@ -1,0 +1,10 @@
+logging:
+  level: "info"
+  level_telegram: "warn"
+  level_httpx: "warn"
+  file_log: false
+  file_path: "data/meshgram.log"
+  use_syslog: false
+  syslog_host: "127.0.0.1"
+  syslog_port: 514
+  syslog_protocol: "udp"

@@ -1,0 +1,17 @@
+telegram:
+  triggers:
+    - key: "^(ai|bot|бот|аи|ии)[:,\\s]+"
+      op: "replace"
+      val: "/ai "
+
+meshtastic:
+  triggers:
+    - key: "^(ai|bot|бот|аи|ии)[:,\\s]+"
+      op: "replace"
+      val: "/ai "
+    - key: "^(test(ing)?|тест)\\b"
+      op: "reply"
+      val: "{short_name}: Ack. Signal {signal_emoji} {signal}. HopsAway={hops_away}, HStart={hops_start}, HLimit={hops_limit}, RSSI={rssi}, SNR={snr}{mqtt_flag}. Better use /ping command. And even better use it in Direct Message."
+    - key: "(flight|plane|airplane|flying|airport|boarding|takeoff|landing|in the air|travel|cruise|jet|aircraft|aviation|boat|ship|sail|🚀|🛩️|🛫|🛬|✈️|🛩|🛥️|🚢|⛴️|⛵|🛶|🚤|🛳️|🚗|🚙|🚕|🚓|🚚|🚛|🚜|🏍️|🛵|🚲|🚌|🚎|🚐|🚒|🚑|🚃|🚄|🚅|🚆|🚇|🚈|🚉|🚊|🚝|🚞|🚋|🚍|🚔|🚖|🚘|🏔️|⛰️|🏕️|🏞️|🎒|🧗|🧗‍♂️|🧗‍♀️|🚵|🚵‍♂️|🚵‍♀️|🏂|⛷️|🏄|🏄‍♂️|🏄‍♀️|🏊|🏊‍♂️|🏊‍♀️|🌍|🌎|🌏|🗺️|🧳|🏨|🏩|🏬|🏯|🏰|🗽|🗼|🕌|⛩️|🕍|🛎️|🏝️|🏖️|🏜️|🏟️|🎢|🎡|🎠)"
+      op: "prepend"
+      val: "/travel"

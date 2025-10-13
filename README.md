@@ -13,6 +13,7 @@ Connect your Meshtastic mesh network with Telegram group chats! 📡💬
 - ✈️ Travel reply template with placeholders
 - 🔀 Per‑channel control: channel names, ignored_channels, receive_only_channels; default node/channel targeting
 - ✉️ BBS (beta): DM‑only private messages with 200B limit, queued delivery, nudges on appearance, and first‑seen recipient selection
+- ⚙️ Layered configuration with env vars: minimal overrides in `config/config.yaml`, optional `config/config.local.yaml`, external `config/triggers.yaml` and `config/topics.yaml`, and secrets via environment variables
 
 ## 🛠 Requirements
 
@@ -38,11 +39,21 @@ Connect your Meshtastic mesh network with Telegram group chats! 📡💬
   pip install -r requirements.txt
   ```
 
-1. **Configure:**
+1. **Configure (split files):**
 
   ```bash
-  cp config/example.config.yaml config/config.yaml
-  $EDITOR config/config.yaml
+  # minimal root config
+  printf "config_version: 2\ntelemetry:\n  environment_enabled: false\n  environment_script: ./data/ha.sh\n  environment_send_interval: 300\n" > config/config.yaml
+
+  # copy split examples as needed (drop the example. prefix)
+  cp config/example.telegram.yaml    config/telegram.yaml
+  cp config/example.meshtastic.yaml  config/meshtastic.yaml
+  cp config/example.channels.yaml    config/channels.yaml
+  cp config/example.logging.yaml     config/logging.yaml
+  cp config/example.ai.yaml          config/ai.yaml
+  cp config/example.bbs.yaml         config/bbs.yaml
+  cp config/example.triggers.yaml    config/triggers.yaml
+  $EDITOR config/*.yaml
   ```
 
 1. **Run:**
@@ -55,15 +66,49 @@ On Linux using a serial device, ensure your user can access the port (e.g. /dev/
 
 ## ⚙️ Configuration
 
-Use `config/example.config.yaml` as a starting point. It’s fully commented and includes:
+Split example files (copy and adapt):
 
-- Telegram: bot token, chat id, topics/threads, optional triggers, AI toggle
-- Meshtastic: serial/tcp device, default node/channel, admin_nodes, send chunking controls, travel_template
-- Triggers: regex rules with YAML‑escaped backslashes (e.g., `"\\b"`), ops `replace|prepend|reply` (reply on mesh only)
-- Per‑channel control: names, ignored_channels, receive_only_channels
-- Reports: telemetry, location, nodes
-- Logging: per‑lib levels, syslog/file options
-- AI: provider (ollama/openai), model/base_url, system prompt, tools (local weather)
+- `config/example.telegram.yaml` → `config/telegram.yaml`: bot token, chat id, topics/threads, optional triggers (from example.triggers.yaml), AI toggle
+- `config/example.meshtastic.yaml` → `config/meshtastic.yaml`: serial/tcp device, default node id, send chunking, travel_template, health policy
+- `config/example.channels.yaml` → `config/channels.yaml`: channel names, reports, topics, and top‑level `default_channel_id`, `ignored_channels`, `receive_only_channels`
+- `config/example.triggers.yaml` → `config/triggers.yaml`: regex rules with YAML‑escaped backslashes (e.g., "\\b"), ops `replace|prepend|reply` (reply on mesh only)
+- `config/example.logging.yaml` → `config/logging.yaml`: per‑lib levels, syslog/file options
+- `config/example.ai.yaml` → `config/ai.yaml`: provider (ollama/openai), model/base_url, system prompt, tools
+- `config/example.bbs.yaml` → `config/bbs.yaml`: BBS/private message settings
+
+### Quickstart (layered config + env)
+
+1) Copy `.env.example` to `.env` and fill in secrets:
+   - `TELEGRAM_BOT_TOKEN`, `OPENAI_API_KEY` (if using OpenAI/Cloudflare)
+
+2) Create a minimal `config/config.yaml` with only overrides:
+
+```yaml
+config_version: 1
+telegram:
+  bot_token: "${TELEGRAM_BOT_TOKEN}"
+  chat_id: -1001234567890
+meshtastic:
+  connection_type: tcp
+  device: "192.168.1.100:4403"
+  default_node_id: "^all"
+  default_channel_id: 0
+  on_disconnect: exit
+  health_max_failures: 3
+bbs:
+  enabled: true
+```
+
+Auto‑discovery loader:
+
+- Loads `config/config.yaml` (required) and overlays `config/config.local.yaml` (optional, gitignored).
+- Then loads all other `*.yaml` files in `config/` automatically (any order).
+- Files starting with `example.` are ignored by the loader.
+- Special handling:
+  - `telegram.triggers` and `meshtastic.triggers` are merged without clobbering other keys.
+  - If a file defines `channels`, `reports`, `topics`, or top‑level `default_channel_id`, `ignored_channels`, `receive_only_channels`, they’re also exposed at top level for convenience.
+
+The app validates the configuration at startup and reports clear errors for missing or invalid fields.
   
 ## 🐳 Docker (compose)
 
@@ -74,8 +119,15 @@ Run the bot in a container with Docker Compose (includes serial device access an
   ```bash
   # from the repo root
   mkdir -p data
-  cp config/example.config.yaml config/config.yaml
-  $EDITOR config/config.yaml
+  printf "config_version: 2\ntelemetry:\n  environment_enabled: false\n  environment_script: ./data/ha.sh\n  environment_send_interval: 300\n" > config/config.yaml
+  cp config/example.telegram.yaml    config/telegram.yaml
+  cp config/example.meshtastic.yaml  config/meshtastic.yaml
+  cp config/example.channels.yaml    config/channels.yaml
+  cp config/example.logging.yaml     config/logging.yaml
+  cp config/example.ai.yaml          config/ai.yaml
+  cp config/example.bbs.yaml         config/bbs.yaml
+  cp config/example.triggers.yaml    config/triggers.yaml
+  $EDITOR config/*.yaml
   ```
 
 Tips:

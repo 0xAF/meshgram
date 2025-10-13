@@ -1,0 +1,8 @@
+bbs:
+  enabled: true
+  send_message_expire_days: 7
+  outbox:
+    max_per_sender: 10
+  notify:
+    cooldown_hours: 6
+  session_index_ttl_seconds: 180
