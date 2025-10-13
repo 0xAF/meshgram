@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   meshgram-plus:
     build:
@@ -8,6 +6,9 @@ services:
     container_name: meshgram-plus
     # Ensure the bot restarts automatically unless stopped
     restart: unless-stopped
+    # Load environment variables (for ${TELEGRAM_BOT_TOKEN}, ${OPENAI_API_KEY}, etc.)
+    env_file:
+      - .env
     # Environment variables can be used inside config via envyaml (${VAR})
     #environment:
       # Example: provide Telegram token and chat ID via env vars (optional)
@@ -18,8 +19,8 @@ services:
       # OLLAMA_BASE_URL: "http://host.docker.internal:11434"
     # Mount config and persist state databases (without masking app code)
     volumes:
-      # Optionally mount your config (recommended so you can edit without rebuild)
-      - ./config/config.yaml:/app/config/config.yaml:ro
+      # Mount your entire config directory (recommended for split config files)
+      - ./config/:/app/config/:ro
       # Persist SQLite databases and logs (app now uses /app/data/*)
       - ./data/:/app/data/
       # Mount source for live development
@@ -33,15 +34,15 @@ services:
     # Security note: privileged is not required; keep minimal caps
     # If you face permission issues, consider adding the container user to the same group as the device
     # or run with --device-cgroup-rule (Docker Engine) rather than privileged.
-    # Command can be adjusted to use a different config path inside /app
-    command: ["python", "src/meshgram.py", "-c", "config/config.yaml"]
+    # Command: default config loader auto-discovers YAMLs in /app/config
+    command: ["python", "src/meshgram.py"]
 
     # Enable docker compose watch for live-reload during development
     develop:
       watch:
         - path: ./src
           action: restart
-        - path: ./config/config.yaml
+        - path: ./config
           action: restart
         - path: ./requirements.txt
           action: rebuild

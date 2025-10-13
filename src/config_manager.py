@@ -101,30 +101,39 @@ class ConfigManager:
     """
     def __init__(self, config_path: str = 'config/config.yaml'):
         base_path = Path(config_path)
+        # Determine config directory and base file
+        if base_path.is_dir():
+            cfg_dir = base_path
+            base_file = cfg_dir / 'config.yaml'
+        else:
+            cfg_dir = base_path.parent
+            base_file = base_path
         cfg: Dict[str, Any] = {}
+        loaded_files: List[str] = []
 
         def load_yaml(p: Path) -> Dict[str, Any]:
             return dict(EnvYAML(str(p))) if p.exists() else {}
 
         # 1. Load main config (optional)
-        if base_path.exists():
+        if base_file.exists() and base_file.is_file():
             try:
-                cfg = load_yaml(base_path)
+                cfg = load_yaml(base_file)
+                loaded_files.append(str(base_file))
             except Exception as e:
-                raise ValueError(f"Failed to load configuration from {base_path}: {e}")
+                raise ValueError(f"Failed to load configuration from {base_file}: {e}")
         else:
             cfg = {}
 
         # 2. Optional local overlay (gitignored)
-        local_path = base_path.with_name('config.local.yaml')
-        if local_path.exists():
+        local_path = cfg_dir / 'config.local.yaml'
+        if local_path.exists() and local_path.is_file():
             try:
                 _deep_merge(cfg, load_yaml(local_path))
+                loaded_files.append(str(local_path))
             except Exception as e:
                 raise ValueError(f"Failed to load configuration from {local_path}: {e}")
 
         # 3. Load any other .yaml files in config dir (order-insensitive)
-        cfg_dir = base_path.parent
         try:
             for p in sorted(cfg_dir.glob('*.yaml')):
                 name = p.name
@@ -132,10 +141,13 @@ class ConfigManager:
                     continue
                 if name.startswith('example.'):
                     continue
+                if not p.is_file():
+                    continue
                 # Merge file content; special handling for triggers and channels
                 content = load_yaml(p)
                 if not content:
                     continue
+                loaded_files.append(str(p))
                 # If this file provides a top-level 'telegram.triggers' or 'meshtastic.triggers' block (like triggers.yaml),
                 # merge those specifically to avoid overwriting the entire telegram/meshtastic sections unintentionally.
                 tel_t = content.get('telegram', {}).get('triggers') if isinstance(content.get('telegram'), dict) else None
@@ -175,6 +187,15 @@ class ConfigManager:
         self.config = cfg
         # Delegate logging configuration to logging_utils
         configure_logging(self.config)
+        # Emit a concise config summary for diagnostics
+        try:
+            logger = get_logger(__name__)
+            logger.info(
+                f"config_loaded base={base_file} dir={cfg_dir} files={len(loaded_files)} has_meshtastic={isinstance(self.config.get('meshtastic'), dict)} has_telegram={isinstance(self.config.get('telegram'), dict)}",
+                extra={"file_list": loaded_files},
+            )
+        except Exception:
+            pass
 
     def get(self, key: str, default: Optional[Any] = None) -> Any:
         """

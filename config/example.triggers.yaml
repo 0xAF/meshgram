@@ -5,13 +5,21 @@ telegram:
       val: "/ai "
 
 meshtastic:
+  # Template for /travel replies; supported placeholders:
+  #   {from_short} {to_short} {hops_away} {hops_limit} {hops_start} {signal} {signal_emoji}
+  travel_template: "✈️ Safe travels — signal: {signal_emoji} {signal}, hops: {hops_away}. Carry a power bank and share your route in FB groups."
   triggers:
     - key: "^(ai|bot|бот|аи|ии)[:,\\s]+"
       op: "replace"
       val: "/ai "
-    - key: "^(test(ing)?|тест)\\b"
+    # English test
+    - key: "^(test(ing)?)\\b"
       op: "reply"
-  val: "{short_name}: ✅ Test OK {signal_emoji} {signal}{mqtt_flag} • ch {channel_num} • hops away={hops_away}, start={hops_start}, limit={hops_limit} • RSSI {rssi} • SNR {snr}. Try /ping for more."
+      val: "{short_name}: ✅ Test OK {signal_emoji} {signal}{mqtt_flag} • ch {channel_num} • hops away={hops_away}, start={hops_start}, limit={hops_limit} • RSSI {rssi} • SNR {snr}. Try /ping for more."
+    # Bulgarian test
+    - key: "^(тест)\\b"
+      op: "reply"
+      val: "{short_name}: ✅ Тест ОК {signal_emoji} {signal}{mqtt_flag} • канал {channel_num} • хопове: разстояние={hops_away}, старт={hops_start}, лимит={hops_limit} • RSSI {rssi} • SNR {snr}. Ползвай /ping за повече."
     - key: "(flight|plane|airplane|flying|airport|boarding|takeoff|landing|in the air|travel|cruise|jet|aircraft|aviation|boat|ship|sail|🚀|🛩️|🛫|🛬|✈️|🛩|🛥️|🚢|⛴️|⛵|🛶|🚤|🛳️|🚗|🚙|🚕|🚓|🚚|🚛|🚜|🏍️|🛵|🚲|🚌|🚎|🚐|🚒|🚑|🚃|🚄|🚅|🚆|🚇|🚈|🚉|🚊|🚝|🚞|🚋|🚍|🚔|🚖|🚘|🏔️|⛰️|🏕️|🏞️|🎒|🧗|🧗‍♂️|🧗‍♀️|🚵|🚵‍♂️|🚵‍♀️|🏂|⛷️|🏄|🏄‍♂️|🏄‍♀️|🏊|🏊‍♂️|🏊‍♀️|🌍|🌎|🌏|🗺️|🧳|🏨|🏩|🏬|🏯|🏰|🗽|🗼|🕌|⛩️|🕍|🛎️|🏝️|🏖️|🏜️|🏟️|🎢|🎡|🎠)"
       op: "prepend"
       val: "/travel"

@@ -26,4 +26,4 @@ COPY README.md ./
 
 # Default entrypoint/cmd; config path can be overridden via args
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["python", "src/meshgram.py", "-c", "config/config.yaml"]
+CMD ["python", "src/meshgram.py"]

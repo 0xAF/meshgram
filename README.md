@@ -13,7 +13,7 @@ Connect your Meshtastic mesh network with Telegram group chats! 📡💬
 - ✈️ Travel reply template with placeholders
 - 🔀 Per‑channel control: channel names, ignored_channels, receive_only_channels; default node/channel targeting
 - ✉️ BBS (beta): DM‑only private messages with 200B limit, queued delivery, nudges on appearance, and first‑seen recipient selection
-- ⚙️ Layered configuration with env vars: minimal overrides in `config/config.yaml`, optional `config/config.local.yaml`, external `config/triggers.yaml` and `config/topics.yaml`, and secrets via environment variables
+- ⚙️ Layered configuration with env vars: split files auto‑discovered from `config/` (ignores `example.*`), optional minimal root `config/config.yaml` and `config/config.local.yaml`, plus secrets via environment variables
 
 ## 🛠 Requirements
 
@@ -42,7 +42,7 @@ Connect your Meshtastic mesh network with Telegram group chats! 📡💬
 1. **Configure (split files):**
 
   ```bash
-  # minimal root config
+  # minimal root config (optional)
   printf "config_version: 2\ntelemetry:\n  environment_enabled: false\n  environment_script: ./data/ha.sh\n  environment_send_interval: 300\n" > config/config.yaml
 
   # copy split examples as needed (drop the example. prefix)
@@ -70,7 +70,8 @@ On Linux using a serial device, ensure your user can access the port (e.g. /dev/
 Split example files (copy and adapt):
 
 - `config/example.telegram.yaml` → `config/telegram.yaml`: bot token, chat id, topics/threads, optional triggers (from example.triggers.yaml), AI toggle
-- `config/example.meshtastic.yaml` → `config/meshtastic.yaml`: serial/tcp device, default node id, send chunking, travel_template, health policy
+- `config/example.meshtastic.yaml` → `config/meshtastic.yaml`: serial/tcp device, default node id, send chunking, health policy
+- `config/example.triggers.yaml` → `config/triggers.yaml`: regex rules and `meshtastic.travel_template` for the /travel reply
 - `config/example.channels.yaml` → `config/channels.yaml`: channel names, reports, topics, and top‑level `default_channel_id`, `ignored_channels`, `receive_only_channels`
 - `config/example.triggers.yaml` → `config/triggers.yaml`: regex rules with YAML‑escaped backslashes (e.g., "\\b"), ops `replace|prepend|reply` (reply on mesh only)
 - `config/example.logging.yaml` → `config/logging.yaml`: per‑lib levels, syslog/file options
@@ -83,7 +84,7 @@ Split example files (copy and adapt):
 1) Copy `.env.example` to `.env` and fill in secrets:
    - `TELEGRAM_BOT_TOKEN`, `OPENAI_API_KEY` (if using OpenAI/Cloudflare)
 
-2) Create a minimal `config/config.yaml` with only overrides:
+2) Create a minimal `config/config.yaml` with only overrides (optional):
 
 ```yaml
 config_version: 1
@@ -103,7 +104,7 @@ bbs:
 
 Auto‑discovery loader:
 
-- Loads `config/config.yaml` (required) and overlays `config/config.local.yaml` (optional, gitignored).
+- Loads `config/config.yaml` (optional) and overlays `config/config.local.yaml` (optional, gitignored).
 - Then loads all other `*.yaml` files in `config/` automatically (any order).
 - Files starting with `example.` are ignored by the loader.
 - Special handling:
@@ -134,10 +135,10 @@ Run the bot in a container with Docker Compose (includes serial device access an
 
 Tips:
 
-- If using a serial device, set in `config/config.yaml`:
+- If using a serial device, set in `config/meshtastic.yaml`:
   - `meshtastic.connection_type: serial`
   - `meshtastic.device: "/dev/ttyUSB0"` (or your actual path; stable options under `/dev/serial/by-id/*`)
-- Ensure the same device path is mapped in `docker-compose.yml` under `services.meshgram.devices`.
+- Ensure the same device path is mapped in `docker-compose.yml` under `services.meshgram-plus.devices`.
   - Optional file logging: set `logging.file_log: true` to write `./data/meshgram.log` (inside container: `/app/data/meshgram.log`).
 
 1. Build and run
@@ -157,8 +158,8 @@ Tips:
 Notes
 
 - The compose file mounts:
-  - `./config/config.yaml` into the container (read-only)
-  - `./data/messages.db`, `./data/cache.db`, and `./data/meshgram.log` for persistence
+  - `./config/` into the container as `/app/config/` (read-only) so all split YAML files are available
+  - `./data/` into the container as `/app/data/` for SQLite databases and logs
 - Environment variables referenced in config (e.g., `${TELEGRAM_BOT_TOKEN}`) can be provided via the `environment:` section in `docker-compose.yml` or your shell.
 - On Linux, ensure your user has permissions to the serial device (often group `dialout`), and that the device path exists before starting the container.
    

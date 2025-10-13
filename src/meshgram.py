@@ -161,10 +161,14 @@ class Meshgram:
         try:
             if self.telegram and self.config.get('telegram.notify_on_start', True):
                 topic = self.config.get('telegram.startup_topic', 'default')
-                text = f"✅ Bot is up and running. (run_id={self.run_id})"
-                if bot_sn or bot_id:
-                    text += f" — node {bot_sn or bot_id}"
-                text += f" — {ts}"
+                # Build a node label that includes both short name and id when available
+                node_label = ""
+                try:
+                    if (bot_sn or bot_id):
+                        node_label = f" — node {bot_sn} ({bot_id})" if (bot_sn and bot_id) else f" — node {bot_sn or bot_id}"
+                except Exception:
+                    node_label = ""
+                text = f"✅ Bot is up and running. (run_id={self.run_id}){node_label} — {ts}"
                 _ = await self.telegram.send_message(text=text, topic=str(topic))
                 self.logger.info("startup_notify_telegram", run_id=self.run_id, topic=str(topic))
         except Exception as e:
@@ -175,9 +179,14 @@ class Meshgram:
             if self.meshtastic and self.config.get('meshtastic.notify_admins_on_start', True):
                 admins = self.config.get('meshtastic.admin_nodes', [])
                 if isinstance(admins, list) and admins:
-                    dm_text = f"BOT online ✅ (run_id={self.run_id}) — {ts}"
-                    if bot_sn or bot_id:
-                        dm_text += f" — node {bot_sn or bot_id}"
+                    # Reuse the same node label formatting as Telegram
+                    node_label = ""
+                    try:
+                        if (bot_sn or bot_id):
+                            node_label = f" — node {bot_sn} ({bot_id})" if (bot_sn and bot_id) else f" — node {bot_sn or bot_id}"
+                    except Exception:
+                        node_label = ""
+                    dm_text = f"BOT online ✅ (run_id={self.run_id}){node_label} — {ts}"
                     for raw_id in admins:
                         try:
                             if not isinstance(raw_id, str):
@@ -197,7 +206,7 @@ class Meshgram:
 
 async def main() -> None:
     parser = argparse.ArgumentParser(description='Meshgram: Meshtastic-Telegram Bridge')
-    parser.add_argument('-c', '--config', default='config/config.yaml', help='Path to configuration file')
+    parser.add_argument('-c', '--config', default='config', help='Path to configuration file or directory')
     args = parser.parse_args()
 
     config = ConfigManager(args.config)

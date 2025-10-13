@@ -175,7 +175,7 @@ class MeshtasticInterface:
     async def _create_interface(self) -> SerialInterface | TCPInterface:
         """Instantiate either a Serial or TCP meshtastic interface based on config."""
         connection_type = cast(str, self.config.get('meshtastic.connection_type', 'serial'))
-        device = cast(str, self.config.get('meshtastic.device'))
+        device = cast(str, self.config.get('meshtastic.device', ''))
         if not device:
             raise ValueError("Meshtastic device is not configured in the YAML file.")
         
@@ -338,7 +338,16 @@ class MeshtasticInterface:
                 _rln = _n.get('longName') if _n else None
             except Exception:
                 _rsn = _rln = None
-            self.logger.info("mt_send_attempt", instance=self.instance_id, recipient=recipient, recipient_sn=_rsn, recipient_ln=_rln, channel=channel, size=len(text.encode('utf-8')))
+            self.logger.info(
+                "mt_send_attempt",
+                instance=self.instance_id,
+                recipient=recipient,
+                recipient_sn=_rsn,
+                recipient_ln=_rln,
+                channel=channel,
+                size=len(text.encode('utf-8')),
+                text=text,
+            )
         except Exception:
             pass
 
