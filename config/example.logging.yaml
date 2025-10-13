@@ -1,10 +1,14 @@
 logging:
+  # Global log level: debug | info | warn | error
   level: "info"
+  # Per-library overrides (to reduce noise)
   level_telegram: "warn"
   level_httpx: "warn"
+  # Write logs to a file as well as console
   file_log: false
   file_path: "data/meshgram.log"
+  # Also send logs to syslog (optional)
   use_syslog: false
   syslog_host: "127.0.0.1"
   syslog_port: 514
-  syslog_protocol: "udp"
+  syslog_protocol: "udp"  # udp or tcp

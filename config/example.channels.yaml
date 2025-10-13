@@ -1,17 +1,17 @@
-channels:
+channels: # Optional human-friendly names for mesh channel indices
   - "LongFast"   # 0
   - "Bulgaria"   # 1
 
-default_channel_id: 0
-ignored_channels: []
-receive_only_channels: []
+default_channel_id: 0 # default mesh channel index for outbound messages (0..N)
+ignored_channels: []  # channels to ignore entirely
+receive_only_channels: [] # forward to Telegram but do not respond in those channels
 
-reports:
+reports: # Control what information Meshgram posts/updates in Telegram
   telemetry: true
   location: false
   nodes: true
 
-topics:
+topics: # Thread IDs for Telegram Topics (when telegram.use_topics=true)
   telemetry: 907
   location: 909
   nodes: 918

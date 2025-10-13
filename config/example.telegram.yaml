@@ -1,11 +1,21 @@
 telegram:
+  # Bot token from @BotFather (https://core.telegram.org/bots/tutorial)
   bot_token: "${TELEGRAM_BOT_TOKEN}"
+  # Target chat (supergroup) id as a negative integer, e.g. -1001234567890
   chat_id: -1001234567890
+  # List of Telegram user IDs allowed to run privileged commands; empty list allows all users
   authorized_users:
     - 1111111111
+  # Forward plain Telegram messages to the mesh (to meshtastic.default_node_id)
   enable_message_forwarding: false
+  # Use Telegram Topics/Threads; map mesh channels to topic IDs under 'topics' in channels.yaml
   use_topics: false
+  # Preserve incoming Markdown V2 formatting by default (set to false to always auto-escape)
   raw_markdown: false
+  # Enable AI responses via Telegram command /ai (feature key 'ait')
   ai_enabled: false
+  # Post a message when the bot starts
   notify_on_start: true
+  # Which topic to post the startup message into (when use_topics=true)
+  # Use a key from the 'topics' section or 'default'
   startup_topic: "default"

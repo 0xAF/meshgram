@@ -1,22 +1,49 @@
 meshtastic:
+  # How to connect to your Meshtastic node: 'serial' or 'tcp'
   connection_type: serial
+  # Serial device when using connection_type=serial (for TCP use "host:port")
   device: "/dev/ttyACM0"
+  # Example TCP: uncomment the next line and set connection_type: tcp
   # device: "192.168.0.100:4403"
+
+  # Where to send Telegram-originated messages on the mesh:
+  #  - "^all" to broadcast
+  #  - "!abcdef12" for a specific node id
   default_node_id: "^all"
+  # Delay between sending message chunks (milliseconds)
   send_delay_ms: 200
+  # Maximum number of chunks to send per message (excess will be summarized)
   max_send_chunks: 5
+  # Template for truncation notice when a message exceeds max_send_chunks.
+  # Use {omitted} to interpolate the number of omitted chunks.
   truncation_notice_template: "\n...and {omitted} more chunk(s) not sent: message too large"
+
   admin_nodes:
-    - '1b8c7774'
+    - '1b8c7774' # node id of an admin node that can use /admin command
+  # Send a direct message to each admin node when the bot starts
   notify_admins_on_start: true
+
   commands:
-    ping: true
-    help: true
-    ai: false
-    travel: true
+    ping: true   # /ping command to get your hop count and node id back
+    help: true   # /help command
+    ai: false    # enable /ai mesh command (feature key 'aim')
+    travel: true # enable /travel safety reminder command
+  # Template for /travel replies; supported placeholders:
+  #   {from_short} {to_short} {hops_away} {hops_limit} {hops_start} {signal} {signal_emoji}
   travel_template: "✈️ Safe travels — signal: {signal_emoji} {signal}, hops: {hops_away}. Carry a power bank and share your route in FB groups."
-  reply_directly: false
+  
+  reply_directly: false # if true, replies go directly to the sender instead of the channel
+  # Master mesh AI feature flag (aim)
   ai_enabled: false
+
+  # Action when the serial connection is lost or becomes unhealthy:
+  #   - exit: terminate the process so Docker/systemd can restart it (default)
+  #   - reconnect: keep trying to reconnect
   on_disconnect: exit
+
+  # Health check policy: require this many consecutive failures before taking action
+  # (reconnect or exit depending on on_disconnect). Minimum 1.
   health_max_failures: 3
+
+  # Link template to a node info page; {node_id} is replaced with the numeric id
   node_info_link: "https://meshmap.net/{node_id}"

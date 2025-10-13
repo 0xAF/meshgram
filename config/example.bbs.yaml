@@ -1,8 +1,13 @@
 bbs:
+  # Enable the BBS (private messages) subsystem
   enabled: true
+  # How many days before messages expire automatically
   send_message_expire_days: 7
   outbox:
+    # Limit queued items per sender
     max_per_sender: 10
   notify:
+    # General nudge cooldown; first-seen finalization bypasses once
     cooldown_hours: 6
+  # Session index lifetime for list/read commands
   session_index_ttl_seconds: 180

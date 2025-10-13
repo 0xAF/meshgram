@@ -1,8 +1,10 @@
 ai:
+  # Which backend to use: 'ollama' (local) or 'openai' (OpenAI-compatible)
   provider: ollama
-  enable_tools: false
-  enable_thinking: false
-  strip_thinking: true
+  # Common options
+  enable_tools: false       # allow model to call tools (function calling)
+  enable_thinking: false   # request chain-of-thought tokens (Ollama only)
+  strip_thinking: true     # strip visible "thinking/reasoning" blocks from final reply
   system_prompt: |
     You are a helpful assistant running on a Meshtastic <-> Telegram bridge. Keep answers concise.
     You speak only in Bulgarian, unless the user specifically asks you to respond in English.
