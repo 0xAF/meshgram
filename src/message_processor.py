@@ -1608,6 +1608,8 @@ class MessageProcessor:
                     return
                 conv_id = str(user_id) if user_id is not None else 'global'
                 reply = await self._ai_chat(prompt, conversation_id=conv_id)
+                if not isinstance(reply, str) or not reply.strip():
+                    reply = "(no reply)"
                 reply_to = message.get('message_id') if isinstance(message.get('message_id'), int) else None
                 await self.telegram.send_message(
                     reply[:3500],

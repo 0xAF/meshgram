@@ -9,7 +9,8 @@ Connect your Meshtastic mesh network with Telegram group chats! 📡💬
 - 📨 Telegram: commands, topics/threads, reactions, locations, optional message forwarding
 - 🛰️ Mesh commands: /ping, /help, /travel, /ai, /aireset, /admin (via admin_nodes)
 - 🧠 AI chat: Ollama or OpenAI; local tool (weather script), system prompt, chain‑of‑thought stripping, threaded replies
-- 🧩 Triggers engine: regex replace/prepend (mesh + Telegram) and reply (mesh) with placeholders (signal, RSSI/SNR, hops, MQTT, channel)
+- � AI chat: Ollama or OpenAI (incl. Cloudflare Workers AI via Responses API); local tool (weather script), system prompt, chain‑of‑thought stripping, threaded replies
+- �🧩 Triggers engine: regex replace/prepend (mesh + Telegram) and reply (mesh) with placeholders (signal, RSSI/SNR, hops, MQTT, channel)
 - ✈️ Travel reply template with placeholders
 - 🔀 Per‑channel control: channel names, ignored_channels, receive_only_channels; default node/channel targeting
 - ✉️ BBS (beta): DM‑only private messages with 200B limit, queued delivery, nudges on appearance, and first‑seen recipient selection
@@ -115,6 +116,50 @@ Auto‑discovery loader:
   - If a file defines `channels`, `reports`, `topics`, or top‑level `default_channel_id`, `ignored_channels`, `receive_only_channels`, they’re also exposed at top level for convenience.
 
 The app validates the configuration at startup and reports clear errors for missing or invalid fields.
+
+### AI providers and Cloudflare notes
+
+You can choose between a local Ollama instance or an OpenAI‑compatible endpoint.
+
+- Ollama: simple to try locally.
+  - `ai.provider: ollama`
+  - `ai.ollama.base_url: http://127.0.0.1:11434`
+  - `ai.ollama.model: llama3`
+
+- OpenAI/Cloudflare (Responses API):
+  - `ai.provider: openai`
+  - For Cloudflare Workers AI, set your account Responses endpoint as `ai.openai.base_url`, e.g.:
+    - `https://api.cloudflare.com/client/v4/accounts/<account_id>/ai/v1`
+  - Set a model available on Cloudflare, e.g.: `@cf/openai/gpt-oss-120b`
+  - Enable the Responses API switch: `ai.openai.use_responses_api: true`
+  - Provide `ai.openai.api_key` (your CF API Token with Workers AI permissions) via env.
+
+Tool support auto‑detection:
+
+- Some models don’t support tool/function calls. We auto‑detect this from provider errors
+  (e.g., Cloudflare invalid_prompt Unknown_recipient) and remember per model to stop
+  sending tools next time. This removes repeated 400s and speeds up replies.
+
+Weather fallback without tools:
+
+- If you ask for weather and the current model doesn’t support tools, we’ll inject a compact
+  local weather context (via your `telemetry.environment_script`) so the model can still answer.
+  If the provider still errors, we’ll return the local weather summary directly instead of an error.
+
+Telegram empty‑message guard:
+
+- Telegram refuses empty text. We guard against that and fall back to a minimal non‑empty
+  reply if a model returned nothing after stripping internal “thinking”.
+
+Troubleshooting:
+
+- Cloudflare 400 invalid_prompt with “Unknown_recipient: …” indicates the model doesn’t support tools.
+  We’ll auto‑disable tools for that model. You’ll see logs like:
+  - `[openai_http_retry_cf_string_input]` – retrying with plain string input
+  - `[openai_disable_tools_for_model]` – caching that tools are off for this model
+  - `[openai_http_error]` – HTTP error details (status + response snippet)
+- Ensure `telemetry.environment_script` points to a script that prints key: value lines. The weather
+  helper parses that output and builds a summary (see `config/example.telemetry.yaml`).
 
 ### Makefile targets
 

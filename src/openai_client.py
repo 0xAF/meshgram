@@ -47,6 +47,8 @@ class OpenAIClient:
         self._use_responses_api = use_responses_api
         self.logger: StructuredLogger = _cast(StructuredLogger, get_logger(__name__))
         self.instance_id = new_id()
+        # Cache of tool support by provider+model. True = supports tools, False = do not send tools.
+        self._tool_support_cache: dict[str, bool] = {}
         self.logger.info(
             "openai_client_init",
             base_url=self.base_url,
@@ -59,6 +61,12 @@ class OpenAIClient:
             use_responses_api=self._use_responses_api,
             instance=self.instance_id,
         )
+
+    def _is_cloudflare(self) -> bool:
+        try:
+            return ("cloudflare.com" in (self.base_url or "").lower()) or str(self.model).startswith("@cf/")
+        except Exception:
+            return False
 
     async def _ensure_client(self) -> httpx.AsyncClient:
         if self._client is None:
@@ -130,12 +138,41 @@ class OpenAIClient:
             client = await self._ensure_client()
             history = self._histories.get(conversation_id, []) if keep_history else []
             messages: List[Dict[str, Any]] = []
+            context_summary: Optional[str] = None
             if keep_history and history:
                 messages.extend(history)
             if system:
                 messages.insert(0, {"role": "system", "content": system})
             messages.append({"role": "user", "content": prompt})
-            tools = tool_definitions() if enable_tools else None
+            # Respect dynamic tool support cache (per base_url+model)
+            def _tools_key() -> str:
+                return f"{self.base_url}|{self.model}"
+
+            cached_support = self._tool_support_cache.get(_tools_key())
+            allow_tools = bool(enable_tools) and (True if cached_support is None else cached_support)
+            tools = tool_definitions() if allow_tools else None
+
+            # If tools are enabled in config but the current model doesn't support them,
+            # proactively add minimal local context for common cases (e.g., weather) so
+            # the model can still answer without structured tool calls.
+            try:
+                if enable_tools and not allow_tools:
+                    want = prompt.lower()
+                    if any(k in want for k in ("weather", "forecast", "temperature", "rain", "snow", "wind", "humidity")):
+                        data, summary = await get_local_weather_from_script(
+                            script=self._environment_script,
+                            timeout=15.0,
+                            logger=self.logger,
+                            instance=self.instance_id,
+                        )
+                        # Attach a compact context note as system message
+                        if isinstance(summary, str) and summary.strip():
+                            context_summary = summary
+                            messages.insert(0, {"role": "system", "content": f"Context: Local weather right now: {summary}"})
+                            self.logger.info("openai_added_weather_context", instance=self.instance_id)
+            except Exception:
+                # Non-fatal: if weather script fails, continue without context
+                pass
 
             self.logger.info(
                 "openai_chat_begin",
@@ -148,15 +185,57 @@ class OpenAIClient:
             )
 
             final_text: Optional[str] = None
+            def _to_cf_input(msgs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+                """Best-effort map to Cloudflare Responses API input.
+
+                Prefer simple string content for system/user messages (broadly accepted).
+                Only emit typed segments for tool results when present.
+                """
+                has_tool = any((m.get("role") == "tool") for m in msgs)
+                cf_msgs: List[Dict[str, Any]] = []
+                for m in msgs:
+                    role = m.get("role", "user")
+                    content = m.get("content", "")
+                    if role == "tool":
+                        # Map tool result messages to Cloudflare's tool_result segment
+                        tool_call_id = m.get("tool_call_id")
+                        seg = {
+                            "type": "tool_result",
+                            "tool_call_id": tool_call_id,
+                            "output": content,
+                        }
+                        cf_msgs.append({"role": "tool", "content": [seg]})
+                    else:
+                        if has_tool:
+                            # When tools are involved, use typed segments
+                            seg = {"type": "text", "text": str(content)}
+                            cf_msgs.append({"role": role, "content": [seg]})
+                        else:
+                            # Simpler, widely compatible: plain string content
+                            cf_msgs.append({"role": role, "content": str(content)})
+                return cf_msgs
+
+            is_cf = self._is_cloudflare()
+            cf_input_mode = "auto"  # auto -> structured messages; string -> plain string prompt fallback
             for _ in range(4):
                 payload: Dict[str, Any]
                 if self._use_responses_api:
-                    payload = {
-                        "model": self.model,
-                        # Many OpenAI-compatible servers accept messages with /responses
-                        "messages": messages,
-                        "temperature": 0.7,
-                    }
+                    # Responses API prefers a unified 'input' field.
+                    # For Cloudflare Workers AI, use typed content segments.
+                    if is_cf and cf_input_mode == "string":
+                        # Fallback: simple string prompt for maximum compatibility
+                        try:
+                            parts: list[str] = []
+                            for m in messages:
+                                c = m.get("content", "")
+                                if isinstance(c, str) and c.strip():
+                                    parts.append(c)
+                            input_obj = "\n".join(parts) if parts else str(messages[-1].get("content", ""))
+                        except Exception:
+                            input_obj = str(messages[-1].get("content", "")) if messages else ""
+                    else:
+                        input_obj = _to_cf_input(messages) if is_cf else messages
+                    payload = {"model": self.model, "input": input_obj, "temperature": 0.7}
                 else:
                     payload = {
                         "model": self.model,
@@ -165,20 +244,104 @@ class OpenAIClient:
                         "enable_thinking": enable_thinking if enable_thinking is not None else self._enable_thinking_default,
                         "thinking": "enabled" if (enable_thinking if enable_thinking is not None else self._enable_thinking_default) else "disabled",
                     }
-                if tools:
+                # Only attach tools when using structures that support them
+                if tools and not (is_cf and cf_input_mode == "string"):
                     payload["tools"] = tools
                 # Some OpenAI-compatible servers (reasoning models) accept a reasoning hint.
                 # This is best-effort and safely ignored by servers that don't support it.
-                if self._enable_thinking_default if enable_thinking is None else bool(enable_thinking):
+                if (self._enable_thinking_default if enable_thinking is None else bool(enable_thinking)) and not self._is_cloudflare():
                     payload["reasoning"] = {"effort": "medium"}
                 try:
                     endpoint = "/responses" if self._use_responses_api else "/chat/completions"
-                    resp = await client.post(f"{self.base_url}{endpoint}", json=payload)
+                    url = f"{self.base_url}{endpoint}"
+                    resp = await client.post(url, json=payload)
                     resp.raise_for_status()
                     data = resp.json()
                 except httpx.HTTPError as e:
-                    self.logger.info("openai_http_error", error=str(e), instance=self.instance_id)
-                    return f"[openai_error] {e}"
+                    # Try to include response details when available to aid debugging (e.g., 400 schema errors)
+                    status = None
+                    text = None
+                    try:
+                        status = getattr(getattr(e, "response", None), "status_code", None)
+                        text = getattr(getattr(e, "response", None), "text", None)
+                    except Exception:
+                        pass
+                    # If Cloudflare complains about invalid_prompt, retry once with plain string input
+                    if (
+                        status == 400
+                        and self._use_responses_api
+                        and is_cf
+                        and cf_input_mode == "auto"
+                        and isinstance(text, str)
+                        and "invalid_prompt" in text.lower()
+                    ):
+                        # Many CF models don't support tools. If error hints at tools/unknown recipient, disable for future calls.
+                        try:
+                            low = text.lower()
+                            if ("unknown_recipient" in low) or ("tool" in low and "recipient" in low) or ("tools not supported" in low):
+                                self._tool_support_cache[_tools_key()] = False
+                                self.logger.info(
+                                    "openai_disable_tools_for_model",
+                                    model=self.model,
+                                    base_url=self.base_url,
+                                    reason="invalid_prompt_unknown_recipient",
+                                    instance=self.instance_id,
+                                )
+                                # If the prompt is about weather, inject local weather context so the model can answer without tools
+                                try:
+                                    want = (prompt or "").lower()
+                                    if any(k in want for k in ("weather", "forecast", "temperature", "rain", "snow", "wind", "humidity")):
+                                        data, summary = await get_local_weather_from_script(
+                                            script=self._environment_script,
+                                            timeout=15.0,
+                                            logger=self.logger,
+                                            instance=self.instance_id,
+                                        )
+                                        if isinstance(summary, str) and summary.strip():
+                                            context_summary = summary
+                                            messages.insert(0, {"role": "system", "content": f"Context: Local weather right now: {summary}"})
+                                            self.logger.info("openai_added_weather_context", instance=self.instance_id)
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+                        cf_input_mode = "string"
+                        self.logger.info(
+                            "openai_http_retry_cf_string_input",
+                            url=url,
+                            instance=self.instance_id,
+                        )
+                        continue
+                    self.logger.info(
+                        "openai_http_error",
+                        error=str(e),
+                        status=status,
+                        response=(text[:1024] if isinstance(text, str) else None),
+                        url=url,
+                        instance=self.instance_id,
+                    )
+                    # If still failing on CF and the prompt is a weather request, return a local weather summary instead of error
+                    try:
+                        if (
+                            status == 400 and self._use_responses_api and is_cf and isinstance(text, str) and "invalid_prompt" in text.lower()
+                        ):
+                            want = (prompt or "").lower()
+                            if any(k in want for k in ("weather", "forecast", "temperature", "rain", "snow", "wind", "humidity")):
+                                if not (isinstance(context_summary, str) and context_summary.strip()):
+                                    _data, _summary = await get_local_weather_from_script(
+                                        script=self._environment_script,
+                                        timeout=15.0,
+                                        logger=self.logger,
+                                        instance=self.instance_id,
+                                    )
+                                    if isinstance(_summary, str) and _summary.strip():
+                                        return _summary
+                                else:
+                                    return context_summary  # type: ignore[return-value]
+                    except Exception:
+                        pass
+                    details = f" {status}" if status else ""
+                    return f"[openai_error]{details} {e}"
                 except Exception as e:
                     self.logger.info("openai_exception", error=str(e), instance=self.instance_id)
                     return f"[openai_exception] {e}"
@@ -188,37 +351,92 @@ class OpenAIClient:
                 if self._use_responses_api:
                     # Try common fields first
                     content = _cast(str, data.get("output_text") or data.get("response") or "")
-                    # Attempt to find tool_calls-like structures
+                    # Attempt to find tool_calls-like structures or nested text in Cloudflare 'output'
+                    out = data.get("output")
+                    if isinstance(out, list):
+                        texts: List[str] = []
+
+                        def _add_tool(seg: Dict[str, Any]) -> None:
+                            nonlocal tool_calls
+                            try:
+                                fn = seg.get("function", {}) if isinstance(seg.get("function"), dict) else {}
+                                name = fn.get("name") or seg.get("name")
+                                # Cloudflare often uses 'parameters' for tool args; also support 'arguments'
+                                arguments = (
+                                    seg.get("parameters")
+                                    or seg.get("arguments")
+                                    or (fn.get("arguments") if isinstance(fn, dict) else {})
+                                    or {}
+                                )
+                                tool_calls.append({
+                                    "id": seg.get("id") or "tool",
+                                    "type": "function",
+                                    "function": {
+                                        "name": name,
+                                        "arguments": json.dumps(arguments) if isinstance(arguments, (dict, list)) else (arguments or "{}"),
+                                    },
+                                })
+                            except Exception:
+                                # Best-effort; ignore malformed tool segment
+                                pass
+
+                        for item in out:
+                            if not isinstance(item, dict):
+                                continue
+                            t = item.get("type")
+                            if t in ("tool_use", "tool_call"):
+                                _add_tool(item)
+                                continue
+                            if t in ("output_text", "text"):
+                                txt = item.get("text")
+                                if isinstance(txt, str):
+                                    texts.append(txt)
+                                continue
+                            if t == "message":
+                                role = item.get("role")
+                                if role == "assistant":
+                                    content_list = item.get("content")
+                                    if isinstance(content_list, list):
+                                        for seg in content_list:
+                                            if not isinstance(seg, dict):
+                                                continue
+                                            st = seg.get("type")
+                                            if st in ("output_text", "text"):
+                                                txt = seg.get("text")
+                                                if isinstance(txt, str):
+                                                    texts.append(txt)
+                                            elif st in ("tool_use", "tool_call"):
+                                                _add_tool(seg)
+                        if not content and texts:
+                            content = "".join(texts)
+
+                    # Fallback to OpenAI-like shape inside 'choices'
                     if not content:
                         choice = (data.get("choices") or [{}])[0] or {}
                         msg = choice.get("message", {})
                         content = _cast(str, msg.get("content", ""))
                         tool_calls = _cast(List[Dict[str, Any]], msg.get("tool_calls") or [])
-                    # Some responses schemas return an 'output' list with segments
-                    out = data.get("output")
-                    if not tool_calls and isinstance(out, list):
-                        for seg in out:
-                            if isinstance(seg, dict) and seg.get("type") in ("tool_use", "tool_call"):
-                                fn = seg.get("function", {}) if isinstance(seg.get("function"), dict) else {}
-                                name = fn.get("name") or seg.get("name")
-                                arguments = seg.get("arguments") or fn.get("arguments") or {}
-                                # Map to Chat Completions tool_calls shape
-                                tool_calls.append({
-                                    "id": seg.get("id") or "tool",
-                                    "type": "function",
-                                    "function": {"name": name, "arguments": json.dumps(arguments) if isinstance(arguments, (dict, list)) else (arguments or "{}")},
-                                })
-                        # If no direct content, try concatenating text parts
-                        if not content:
-                            texts = [t.get("text", "") for t in out if isinstance(t, dict) and t.get("type") in ("output_text", "text")]  # type: ignore
-                            content = "".join([t for t in texts if isinstance(t, str)])
                 else:
                     choice = (data.get("choices") or [{}])[0] or {}
                     msg = choice.get("message", {})
                     tool_calls = msg.get("tool_calls") or []
                     content = msg.get("content", "")
+
+                # Update tool support cache based on actual usage signal
+                try:
+                    if tool_calls:
+                        self._tool_support_cache[_tools_key()] = True
+                    elif cached_support is None and is_cf and allow_tools:
+                        # If CF with tools allowed but no tool_calls ever returned across responses,
+                        # don't change cache here; only set False on explicit errors above.
+                        pass
+                except Exception:
+                    pass
                 if not tool_calls:
                     final_text = content if isinstance(content, str) else str(content)
+                    # If model produced no text but we have a prepared context summary (e.g., weather), use it
+                    if (not isinstance(final_text, str) or not final_text.strip()) and isinstance(context_summary, str) and context_summary.strip():
+                        final_text = context_summary
                     messages.append({"role": "assistant", "content": final_text})
                     self.logger.info("openai_chat_complete", chars=len(final_text or ""), instance=self.instance_id)
                     break
@@ -250,7 +468,11 @@ class OpenAIClient:
 
             do_strip = self._strip_thinking_default if strip_thinking is None else bool(strip_thinking)
             if do_strip and isinstance(final_text, str):
+                _orig_final = final_text
                 final_text = strip_thinking_blocks(final_text, logger=self.logger, instance=self.instance_id)
+                # Avoid returning an empty string; if stripping removed everything, fall back to original
+                if isinstance(final_text, str) and not final_text.strip() and isinstance(_orig_final, str) and _orig_final.strip():
+                    final_text = _orig_final
 
             if keep_history:
                 hist = self._histories.setdefault(conversation_id, [])

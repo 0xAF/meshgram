@@ -299,6 +299,10 @@ class TelegramInterface:
             self.logger.error("Bot or chat_id not initialized")
             return None
         raw_markdown_config: bool = self.config.get('telegram.raw_markdown', False)
+        # Do not attempt to send empty messages (Telegram rejects with BadRequest)
+        if not isinstance(text, str) or not text.strip():
+            self.logger.error("tg_send_failure", instance=self.instance_id, error="Message text is empty (skipping)", attempt=0)
+            return None
         if force_escape is not None and force_escape:
             raw_markdown = False
         else:
