@@ -6,6 +6,7 @@ PY := $(VENV)/bin/python
 PIP := $(VENV)/bin/pip
 PYTEST := $(VENV)/bin/pytest
 RUFF := $(VENV)/bin/ruff
+REQ := requirements.txt
 
 .PHONY: venv install test run clean lint format compose-up compose-down compose-logs compose-build ruff
 
@@ -15,9 +16,12 @@ venv: $(PY)
 $(PY):
 	python3 -m venv $(VENV)
 
-# Install project dependencies into the venv
-install: venv
-	$(PIP) install -r requirements.txt
+# Install project dependencies into the venv (only when requirements change)
+install: $(VENV)/.installed
+
+$(VENV)/.installed: $(REQ) | venv
+	PIP_DISABLE_PIP_VERSION_CHECK=1 $(PIP) install -r $(REQ)
+	touch $@
 
 # Run the test suite inside the venv
 test: install
