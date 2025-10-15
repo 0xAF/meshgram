@@ -178,6 +178,26 @@ class OpenAIClient:
             allow_tools = bool(enable_tools) and (True if cached_support is None else cached_support)
             tools = tool_definitions() if allow_tools else None
 
+            # When tools are disabled or explicitly unsupported, drop any tool-related
+            # artifacts from history to avoid provider schema errors.
+            def _strip_tool_artifacts(msgs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+                out: List[Dict[str, Any]] = []
+                for m in msgs:
+                    role = m.get("role")
+                    if role == "tool":
+                        # Skip historical tool results when tools aren't allowed
+                        continue
+                    if isinstance(m, dict) and ("tool_calls" in m):
+                        mc = dict(m)
+                        mc.pop("tool_calls", None)
+                        out.append(mc)
+                    else:
+                        out.append(m)
+                return out
+
+            if not allow_tools:
+                messages = _strip_tool_artifacts(messages)
+
             # If tools are enabled in config but the current model doesn't support them,
             # proactively add minimal local context for common cases (e.g., weather) so
             # the model can still answer without structured tool calls.
@@ -242,17 +262,20 @@ class OpenAIClient:
                 return cf_msgs
 
             is_cf = self._is_cloudflare()
-            cf_input_mode = "auto"  # auto -> structured messages; string -> plain string prompt fallback
+            # Prefer plain string mode up-front for Cloudflare if tools are not allowed
+            cf_input_mode = "string" if (is_cf and not allow_tools) else "auto"
             for _ in range(4):
                 payload: Dict[str, Any]
                 if self._use_responses_api:
                     # Responses API prefers a unified 'input' field.
                     # For Cloudflare Workers AI, use typed content segments.
+                    # Prepare a filtered view of messages that removes tool artifacts when needed
+                    effective_messages = _strip_tool_artifacts(messages) if not allow_tools else messages
                     if is_cf and cf_input_mode == "string":
                         # Fallback: simple string prompt for maximum compatibility
                         try:
                             parts: list[str] = []
-                            for m in messages:
+                            for m in effective_messages:
                                 c = m.get("content", "")
                                 if isinstance(c, str) and c.strip():
                                     parts.append(c)
@@ -260,7 +283,7 @@ class OpenAIClient:
                         except Exception:
                             input_obj = str(messages[-1].get("content", "")) if messages else ""
                     else:
-                        input_obj = _to_cf_input(messages) if is_cf else messages
+                        input_obj = _to_cf_input(effective_messages) if is_cf else effective_messages
                     payload = {"model": self.model, "input": input_obj, "temperature": 0.7}
                 else:
                     payload = {
