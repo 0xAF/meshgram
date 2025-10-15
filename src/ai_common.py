@@ -8,6 +8,26 @@ import contextlib
 from typing import Any, Dict, List, Optional, Tuple
 
 
+def is_weather_like(text: str) -> bool:
+    """Heuristic: does the prompt look like a weather/forecast question?
+
+    Includes English and Bulgarian keywords to improve detection for local users.
+    This is intentionally simple and fast.
+    """
+    if not isinstance(text, str) or not text:
+        return False
+    t = text.lower()
+    keywords = [
+        # English
+        "weather", "forecast", "temperature", "rain", "snow", "wind", "humidity",
+        # Bulgarian (common forms)
+        "време", "времето", "прогноза", "температура", "дъжд", "сняг", "вятър", "влажност",
+        # City hint (Varna) – helps when users ask "как е времето във варна"
+        "varna", "варна",
+    ]
+    return any(k in t for k in keywords)
+
+
 def strip_thinking_blocks(text: str, *, logger: Any | None = None, instance: Any | None = None) -> str:
     """Remove visible chain-of-thought/thinking sections returned by some models.
 

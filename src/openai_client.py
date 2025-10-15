@@ -8,6 +8,7 @@ from ai_common import (
     tool_definitions,
     get_local_weather_from_script,
     convert_units_inplace,
+    is_weather_like,
 )
 from typing import Any, Dict, List, Optional, cast as _cast
 
@@ -182,8 +183,8 @@ class OpenAIClient:
             # the model can still answer without structured tool calls.
             try:
                 if enable_tools and not allow_tools:
-                    want = prompt.lower()
-                    if any(k in want for k in ("weather", "forecast", "temperature", "rain", "snow", "wind", "humidity")):
+                    want = (prompt or "")
+                    if is_weather_like(want):
                         data, summary = await get_local_weather_from_script(
                             script=self._environment_script,
                             timeout=15.0,
@@ -314,8 +315,8 @@ class OpenAIClient:
                                 )
                                 # If the prompt is about weather, inject local weather context so the model can answer without tools
                                 try:
-                                    want = (prompt or "").lower()
-                                    if any(k in want for k in ("weather", "forecast", "temperature", "rain", "snow", "wind", "humidity")):
+                                    want = (prompt or "")
+                                    if is_weather_like(want):
                                         data, summary = await get_local_weather_from_script(
                                             script=self._environment_script,
                                             timeout=15.0,
@@ -350,8 +351,8 @@ class OpenAIClient:
                         if (
                             status == 400 and self._use_responses_api and is_cf and isinstance(text, str) and "invalid_prompt" in text.lower()
                         ):
-                            want = (prompt or "").lower()
-                            if any(k in want for k in ("weather", "forecast", "temperature", "rain", "snow", "wind", "humidity")):
+                            want = (prompt or "")
+                            if is_weather_like(want):
                                 if not (isinstance(context_summary, str) and context_summary.strip()):
                                     _data, _summary = await get_local_weather_from_script(
                                         script=self._environment_script,
