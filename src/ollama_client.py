@@ -88,6 +88,22 @@ class OllamaClient:
         except Exception:
             pass
 
+    def get_diagnostics(self) -> dict[str, Any]:
+        """Expose basic diagnostics for debugging and UX commands.
+
+        Returns keys:
+          - provider: 'ollama'
+          - base_url: str
+          - model: str
+          - environment_script_configured: bool
+        """
+        return {
+            "provider": "ollama",
+            "base_url": self.base_url,
+            "model": self.model,
+            "environment_script_configured": bool(self._environment_script),
+        }
+
     def reset(self, conversation_id: str = "global") -> None:
         self._histories.pop(conversation_id, None)
         try:

@@ -249,6 +249,22 @@ Notes
 - `/listnodes` – List known nodes
 - `/ai <prompt>` – Ask the AI (if enabled)
 - `/aireset` – Reset your AI context
+- `/aidiagnose` – Show AI provider/model, tool support cache, Responses API mode, and a tiny round-trip test (aliases: /aiinfo, /ai_diag)
+- `/aidiagnose` – Show AI provider/model, tool support cache, Responses API mode, and a tiny round-trip test (aliases: /aiinfo, /ai_diag)
+
+### 🔍 AI diagnose
+
+Use `/aidiagnose` in Telegram to print helpful runtime info:
+
+- Provider and whether it’s Cloudflare
+- Model name and base_url
+- Responses API on/off (for OpenAI‑compatible)
+- Cached tool support for the current model (if we detected unsupported tools)
+- Environment script configured or not
+- A tiny round‑trip test so you can see that the endpoint responds
+
+Aliases: `/aiinfo`, `/ai_diag`.
+
 
 ## 🛰️ Mesh Commands
 

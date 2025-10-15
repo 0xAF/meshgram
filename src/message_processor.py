@@ -1757,6 +1757,59 @@ class MessageProcessor:
             else:
                 await _reply("AI not initialized")
             return
+        if command in ('aidiagnose', 'ai_diag', 'aiinfo'):
+            client = await self._get_ai_client()
+            if not client:
+                await _reply("AI not initialized")
+                return
+            # Collect diagnostics from client if available
+            diag = {}
+            try:
+                if hasattr(client, 'get_diagnostics'):
+                    diag = client.get_diagnostics()
+            except Exception:
+                diag = {}
+            # Minimal round-trip test without posting to chat: ask a tiny prompt
+            test_summary = "n/a"
+            try:
+                resp = await client.chat(
+                    prompt="ping",
+                    system=None,
+                    keep_history=False,
+                    conversation_id="diagnostics",
+                    enable_tools=False,
+                    strip_thinking=True,
+                )
+                if isinstance(resp, str):
+                    test_summary = (resp[:60] + "…") if len(resp) > 60 else resp
+            except Exception as e:
+                test_summary = f"error: {e}"
+            lines = [
+                "AI diagnostics:",
+            ]
+            try:
+                provider = diag.get('provider', 'unknown')
+                model = diag.get('model', 'unknown')
+                base_url = diag.get('base_url', 'n/a')
+                is_cf = diag.get('is_cloudflare')
+                resp_api = diag.get('responses_api')
+                tools_cached = diag.get('tools_supported_cached')
+                env_ok = diag.get('environment_script_configured')
+                lines.append(f"• provider: {provider}{' (cloudflare)' if is_cf else ''}")
+                lines.append(f"• model: {model}")
+                if base_url:
+                    lines.append(f"• base_url: {base_url}")
+                if resp_api is not None:
+                    lines.append(f"• responses_api: {resp_api}")
+                if tools_cached is not None:
+                    lines.append(f"• tools_supported_cached: {tools_cached}")
+                if env_ok is not None:
+                    lines.append(f"• environment_script: {'configured' if env_ok else 'not configured'}")
+            except Exception:
+                pass
+            lines.append(f"• tiny round-trip: {test_summary}")
+            await _reply("\n".join(lines))
+            return
         if command == 'node':
             if not args:
                 await _reply("Usage: /node <node_id>")

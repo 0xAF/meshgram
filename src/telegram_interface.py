@@ -62,6 +62,9 @@ class TelegramInterface:
             'listnodes':{'description': 'List all known nodes', 'handler': self.handle_command},
             'ai':       {'description': 'Chat with the AI: /ai <prompt>', 'handler': self.handle_command},
             'aireset':  {'description': 'Reset your AI conversation context', 'handler': self.handle_command},
+            'aidiagnose': {'description': 'Show AI provider/model/tool support and run a tiny round-trip test', 'handler': self.handle_command},
+            'aiinfo':     {'description': 'Alias for /aidiagnose', 'handler': self.handle_command},
+            'ai_diag':    {'description': 'Alias for /aidiagnose', 'handler': self.handle_command},
         }
 
     async def setup(self) -> None:
@@ -529,7 +532,7 @@ class TelegramInterface:
         user_id = update.effective_user.id
 
         if not self.is_user_authorized(user_id) and command not in [
-            'start', 'help', 'user', 'node', 'status', 'features', 'ai', 'aireset'
+            'start', 'help', 'user', 'node', 'status', 'features', 'ai', 'aireset', 'aidiagnose', 'aiinfo', 'ai_diag'
         ]:
             await update.message.reply_text(
                 escape_markdown("You are not authorized to use this command.", version=2),

@@ -93,6 +93,31 @@ class OpenAIClient:
         self._environment_script = script
         self.logger.info("openai_env_script_set", configured=bool(script), instance=self.instance_id)
 
+    def get_diagnostics(self) -> Dict[str, Any]:
+        """Expose basic diagnostics for debugging and UX commands.
+
+        Returns keys:
+          - provider: 'openai' (cloudflare flagged separately)
+          - is_cloudflare: bool
+          - base_url: str
+          - model: str
+          - responses_api: bool
+          - tools_supported_cached: True|False|None
+          - environment_script_configured: bool
+        """
+        def _tools_key() -> str:
+            return f"{self.base_url}|{self.model}"
+
+        return {
+            "provider": "openai",
+            "is_cloudflare": self._is_cloudflare(),
+            "base_url": self.base_url,
+            "model": self.model,
+            "responses_api": self._use_responses_api,
+            "tools_supported_cached": self._tool_support_cache.get(_tools_key()),
+            "environment_script_configured": bool(self._environment_script),
+        }
+
     def reset(self, conversation_id: str = "global") -> None:
         self._histories.pop(conversation_id, None)
         self.logger.info("openai_history_reset", conversation_id=conversation_id, instance=self.instance_id)
