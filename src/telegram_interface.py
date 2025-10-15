@@ -1,6 +1,5 @@
 import asyncio
 import re
-import logging
 from typing import Dict, Any, Callable, TypedDict
 from collections.abc import Awaitable
 from telegram import Bot, Update

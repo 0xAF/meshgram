@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import httpx
 import asyncio
-from typing import Any, Dict, Optional, List, Tuple, cast as _cast
+from typing import Any, Dict, Optional, List, cast as _cast
 import json
 from logging_utils import get_logger, StructuredLogger, new_id
 from ai_common import (

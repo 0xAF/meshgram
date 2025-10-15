@@ -3,12 +3,11 @@ from __future__ import annotations
 # pyright: reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnknownVariableType=false, reportUnknownParameterType=false, reportAny=false
 
 import asyncio
-import signal
 from importlib import import_module
 import os
 from typing import TypedDict, Literal, Protocol, NotRequired, cast, Any, Dict
 import sqlite3
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.helpers import escape_markdown
@@ -349,7 +348,7 @@ class MessageProcessor:
                 "BBS commands (for BOT commands send /help):\n"
                 "!hm – Message help\n"
             )
-        return f"BBS is disabled. For BOT commands send /help."
+        return "BBS is disabled. For BOT commands send /help."
 
     def _bbs_help_pm(self) -> str:
         # Compact PM help with brief descriptions (<=200 bytes)
@@ -561,7 +560,7 @@ class MessageProcessor:
         # Build session and formatted list (no content)
         pm_ids = [r.id for r in rows]
         ttl = int(self.config.get('bbs.session_index_ttl_seconds', 180))
-        session_id = self.bbs.create_session(recipient_node_id, 'inbox', ttl, pm_ids)
+        _ = self.bbs.create_session(recipient_node_id, 'inbox', ttl, pm_ids)
         header = "Inbox (latest first):"
         lines: list[str] = []
         for idx, r in enumerate(rows, start=1):
@@ -572,7 +571,7 @@ class MessageProcessor:
             from_long = r.sender_long or ''
             lines.append(f"[{idx}] {date} — From {from_short} ({from_long}, {r.sender_node_id}) — status={status}")
         payload = self._bbs_compose_list(header, lines)
-        payload += f"\nsend !mr N to read, !mdi N to delete"
+        payload += "\nsend !mr N to read, !mdi N to delete"
         await self._bbs_reply(recipient_node_id, payload)
 
     async def _bbs_cmd_mr(self, recipient_node_id: str, idx: int) -> None:
@@ -788,7 +787,7 @@ class MessageProcessor:
             await self._bbs_reply(sender_node_id, payload + "\nReply: !ms N")
             return
         # Fallback: unknown target — store as first-seen but require explicit confirmation (0) to enable delivery
-        await self._bbs_reply(sender_node_id, f"Select recipient: 0=first-seen\nReply: !ms 0")
+        await self._bbs_reply(sender_node_id, "Select recipient: 0=first-seen\nReply: !ms 0")
 
     async def _bbs_cmd_ms_select(self, sender_node_id: str, idx: int) -> None:
         """Handle '!ms N' after an ambiguous target list, including 0 for first-seen."""
@@ -957,6 +956,7 @@ class MessageProcessor:
                         environment_script=env_script,
                         enable_thinking_default=bool(self.config.get('ai.enable_thinking', False)),
                         strip_thinking_default=strip_default,
+                        use_responses_api=bool(self.config.get('ai.openai.use_responses_api', False)),
                     )
                 else:
                     mod = import_module('ollama_client')
@@ -1103,7 +1103,7 @@ class MessageProcessor:
             else:
                 self.logger.info("ack_processed", instance=self.instance_id, message_id=message_id_int, telegram_message_id=None, bridge_id=pending_message.get('bridge_id'))
         else:
-            self.logger.info(f"ack_processed", message_id=message_id)
+            self.logger.info("ack_processed", message_id=message_id)
 
     async def handle_text_message_app(self, packet: dict[str, object]) -> None:  # type: ignore[override]
         """Format and forward a Meshtastic text message to Telegram (enriched logging)."""
@@ -1194,31 +1194,43 @@ class MessageProcessor:
             snr_val = float(str(snr)) if snr != 'n/a' else None  # type: ignore[arg-type]
             if rssi_val is not None and snr_val is not None:
                 if rssi_val > -80 and snr_val > 8:
-                    signal_emoji = "😃"; signal_label = "Excellent"
+                    signal_emoji = "😃"
+                    signal_label = "Excellent"
                 elif rssi_val > -90 and snr_val > 2:
-                    signal_emoji = "🙂"; signal_label = "Good"
+                    signal_emoji = "🙂"
+                    signal_label = "Good"
                 elif rssi_val > -100 and snr_val > -5:
-                    signal_emoji = "😐"; signal_label = "Fair"
+                    signal_emoji = "😐"
+                    signal_label = "Fair"
                 else:
-                    signal_emoji = "😣"; signal_label = "Bad"
+                    signal_emoji = "😣"
+                    signal_label = "Bad"
             elif rssi_val is not None:
                 if rssi_val > -80:
-                    signal_emoji = "😃"; signal_label = "Excellent"
+                    signal_emoji = "😃"
+                    signal_label = "Excellent"
                 elif rssi_val > -90:
-                    signal_emoji = "🙂"; signal_label = "Good"
+                    signal_emoji = "🙂"
+                    signal_label = "Good"
                 elif rssi_val > -100:
-                    signal_emoji = "😐"; signal_label = "Fair"
+                    signal_emoji = "😐"
+                    signal_label = "Fair"
                 else:
-                    signal_emoji = "😣"; signal_label = "Bad"
+                    signal_emoji = "😣"
+                    signal_label = "Bad"
             elif snr_val is not None:
                 if snr_val > 8:
-                    signal_emoji = "😃"; signal_label = "Excellent"
+                    signal_emoji = "😃"
+                    signal_label = "Excellent"
                 elif snr_val > 2:
-                    signal_emoji = "🙂"; signal_label = "Good"
+                    signal_emoji = "🙂"
+                    signal_label = "Good"
                 elif snr_val > -5:
-                    signal_emoji = "😐"; signal_label = "Fair"
+                    signal_emoji = "😐"
+                    signal_label = "Fair"
                 else:
-                    signal_emoji = "😣"; signal_label = "Bad"
+                    signal_emoji = "😣"
+                    signal_label = "Bad"
         except Exception:
             pass
 
@@ -1412,7 +1424,7 @@ class MessageProcessor:
             log_text = log_text[:160] + '…'
         self.logger.debug("bridge_render", instance=self.instance_id, bridge_id=bridge_id, direction="mesh_to_tg", message_text=log_text)
         if channel_num in receive_only_channels:
-            message = f"[🚫🤐]  {message}";
+            message = f"[🚫🤐]  {message}"
         _ = await self.telegram.send_message(message, disable_notification=False, topic=f"channel{channel_num}" if not recipient.startswith('!') else "default")
         self.logger.info("bridge_sent", instance=self.instance_id, bridge_id=bridge_id, direction="mesh_to_tg")
         # self.logger.info("bridge_complete", instance=self.instance_id, bridge_id=bridge_id, direction="mesh_to_tg")
@@ -1845,7 +1857,7 @@ class MessageProcessor:
         if snr != 'n/a':
             ping_text += f", SNR={snr}"
         ping_text += f", Signal={signal_emoji} {signal_label}"
-        ping_text += f", (MQTT)" if mqtt else ""
+        ping_text += ", (MQTT)" if mqtt else ""
 
         self.logger.info(
             "ping_command_rx",
@@ -1857,8 +1869,7 @@ class MessageProcessor:
             to_short=to_short,
             channel=channel_num,
         )
-        sent_to = sender
-        if recipient == "^all": # channel message
+        if recipient == "^all":  # channel message
             send_to = "^all"
         else:
             channel_num = 0  # direct message

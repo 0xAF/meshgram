@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from gc import enable
 import httpx
 import json
 from ai_common import (
@@ -10,7 +9,7 @@ from ai_common import (
     get_local_weather_from_script,
     convert_units_inplace,
 )
-from typing import Any, Dict, List, Optional, Tuple, cast as _cast
+from typing import Any, Dict, List, Optional, cast as _cast
 
 from logging_utils import get_logger, StructuredLogger, new_id
 
@@ -33,6 +32,7 @@ class OpenAIClient:
         environment_script: Optional[str] = None,
         enable_thinking_default: bool = False,
         strip_thinking_default: bool = True,
+        use_responses_api: bool = False,
     ) -> None:
         self.base_url = base_url.rstrip('/')
         self.model = model
@@ -44,6 +44,7 @@ class OpenAIClient:
         self._environment_script = environment_script
         self._enable_thinking_default = enable_thinking_default
         self._strip_thinking_default = strip_thinking_default
+        self._use_responses_api = use_responses_api
         self.logger: StructuredLogger = _cast(StructuredLogger, get_logger(__name__))
         self.instance_id = new_id()
         self.logger.info(
@@ -55,6 +56,7 @@ class OpenAIClient:
             env_script=bool(self._environment_script),
             enable_thinking_default=self._enable_thinking_default,
             strip_thinking_default=self._strip_thinking_default,
+            use_responses_api=self._use_responses_api,
             instance=self.instance_id,
         )
 
@@ -147,13 +149,22 @@ class OpenAIClient:
 
             final_text: Optional[str] = None
             for _ in range(4):
-                payload: Dict[str, Any] = {
-                    "model": self.model,
-                    "messages": messages,
-                    "temperature": 0.7,
-                    "enable_thinking": enable_thinking if enable_thinking is not None else self._enable_thinking_default,
-                    "thinking": "enabled" if (enable_thinking if enable_thinking is not None else self._enable_thinking_default) else "disabled",
-                }
+                payload: Dict[str, Any]
+                if self._use_responses_api:
+                    payload = {
+                        "model": self.model,
+                        # Many OpenAI-compatible servers accept messages with /responses
+                        "messages": messages,
+                        "temperature": 0.7,
+                    }
+                else:
+                    payload = {
+                        "model": self.model,
+                        "messages": messages,
+                        "temperature": 0.7,
+                        "enable_thinking": enable_thinking if enable_thinking is not None else self._enable_thinking_default,
+                        "thinking": "enabled" if (enable_thinking if enable_thinking is not None else self._enable_thinking_default) else "disabled",
+                    }
                 if tools:
                     payload["tools"] = tools
                 # Some OpenAI-compatible servers (reasoning models) accept a reasoning hint.
@@ -161,7 +172,8 @@ class OpenAIClient:
                 if self._enable_thinking_default if enable_thinking is None else bool(enable_thinking):
                     payload["reasoning"] = {"effort": "medium"}
                 try:
-                    resp = await client.post(f"{self.base_url}/chat/completions", json=payload)
+                    endpoint = "/responses" if self._use_responses_api else "/chat/completions"
+                    resp = await client.post(f"{self.base_url}{endpoint}", json=payload)
                     resp.raise_for_status()
                     data = resp.json()
                 except httpx.HTTPError as e:
@@ -170,11 +182,41 @@ class OpenAIClient:
                 except Exception as e:
                     self.logger.info("openai_exception", error=str(e), instance=self.instance_id)
                     return f"[openai_exception] {e}"
-
-                choice = (data.get("choices") or [{}])[0] or {}
-                msg = choice.get("message", {})
-                tool_calls = msg.get("tool_calls") or []
-                content = msg.get("content", "")
+                # Parse response across both endpoints
+                tool_calls: List[Dict[str, Any]] = []
+                content = ""
+                if self._use_responses_api:
+                    # Try common fields first
+                    content = _cast(str, data.get("output_text") or data.get("response") or "")
+                    # Attempt to find tool_calls-like structures
+                    if not content:
+                        choice = (data.get("choices") or [{}])[0] or {}
+                        msg = choice.get("message", {})
+                        content = _cast(str, msg.get("content", ""))
+                        tool_calls = _cast(List[Dict[str, Any]], msg.get("tool_calls") or [])
+                    # Some responses schemas return an 'output' list with segments
+                    out = data.get("output")
+                    if not tool_calls and isinstance(out, list):
+                        for seg in out:
+                            if isinstance(seg, dict) and seg.get("type") in ("tool_use", "tool_call"):
+                                fn = seg.get("function", {}) if isinstance(seg.get("function"), dict) else {}
+                                name = fn.get("name") or seg.get("name")
+                                arguments = seg.get("arguments") or fn.get("arguments") or {}
+                                # Map to Chat Completions tool_calls shape
+                                tool_calls.append({
+                                    "id": seg.get("id") or "tool",
+                                    "type": "function",
+                                    "function": {"name": name, "arguments": json.dumps(arguments) if isinstance(arguments, (dict, list)) else (arguments or "{}")},
+                                })
+                        # If no direct content, try concatenating text parts
+                        if not content:
+                            texts = [t.get("text", "") for t in out if isinstance(t, dict) and t.get("type") in ("output_text", "text")]  # type: ignore
+                            content = "".join([t for t in texts if isinstance(t, str)])
+                else:
+                    choice = (data.get("choices") or [{}])[0] or {}
+                    msg = choice.get("message", {})
+                    tool_calls = msg.get("tool_calls") or []
+                    content = msg.get("content", "")
                 if not tool_calls:
                     final_text = content if isinstance(content, str) else str(content)
                     messages.append({"role": "assistant", "content": final_text})

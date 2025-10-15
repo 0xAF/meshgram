@@ -19,7 +19,7 @@ async def test_meshtastic_interface_setup(mock_config):
 
     await interface.setup()
 
-    assert interface.is_setup == True
+    assert interface.is_setup
     interface._create_interface.assert_called_once()
     interface._fetch_node_info.assert_called_once()
 

@@ -26,7 +26,7 @@ Connect your Meshtastic mesh network with Telegram group chats! 📡💬
   cd meshgram-plus
   ```
 
-1. **Set up a virtual environment:**
+1. **Set up a virtual environment (or use Make):**
 
   ```bash
   python3 -m venv venv
@@ -57,10 +57,13 @@ Connect your Meshtastic mesh network with Telegram group chats! 📡💬
   $EDITOR config/*.yaml
   ```
 
-1. **Run:**
+1. **Run (or use Make):**
 
   ```bash
+  # via Python
   python src/meshgram.py
+  # or via Make
+  make run
   ```
 
 On Linux using a serial device, ensure your user can access the port (e.g. /dev/ttyUSB0): add your user to the dialout group and re‑login: `sudo usermod -a -G dialout "$USER"`.
@@ -112,6 +115,31 @@ Auto‑discovery loader:
   - If a file defines `channels`, `reports`, `topics`, or top‑level `default_channel_id`, `ignored_channels`, `receive_only_channels`, they’re also exposed at top level for convenience.
 
 The app validates the configuration at startup and reports clear errors for missing or invalid fields.
+
+### Makefile targets
+
+For a smoother developer workflow, use the provided Makefile:
+
+```bash
+# create venv and install requirements
+make install
+
+# run tests
+make test
+
+# run the app
+make run
+
+# lint and format (requires ruff; installed on first run if present in venv)
+make lint
+make format
+
+# docker compose helpers
+make compose-build
+make compose-up
+make compose-logs
+make compose-down
+```
   
 ## 🐳 Docker (compose)
 
@@ -162,7 +190,7 @@ Notes
   - `./data/` into the container as `/app/data/` for SQLite databases and logs
 - Environment variables referenced in config (e.g., `${TELEGRAM_BOT_TOKEN}`) can be provided via the `environment:` section in `docker-compose.yml` or your shell.
 - On Linux, ensure your user has permissions to the serial device (often group `dialout`), and that the device path exists before starting the container.
-   
+
 ## 📡 Telegram Commands
 
 - `/start` – See available commands

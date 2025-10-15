@@ -1,5 +1,14 @@
 from __future__ import annotations
 
+import logging
+import os
+import shutil
+import re
+from typing import Any, Dict
+import itertools
+from typing import TypeAlias
+import threading
+
 """Lightweight structured logging helpers and logging configuration.
 
 Provides a tiny utility to emit key=value style log lines so they are
@@ -17,14 +26,6 @@ Rules:
 - Booleans become true/false.
 """
 
-import logging
-import os
-import shutil
-import re
-from typing import Any, Dict
-import itertools
-from typing import TypeAlias
-import threading
 
 # Permissive value type accepted for logging fields (kept broad intentionally)
 # Use a broad union plus object; fall back to repr for unsupported types.

@@ -1,9 +1,7 @@
 import os
 import stat
 import textwrap
-import asyncio
 import pytest
-from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from ai_common import get_local_weather_from_script

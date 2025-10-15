@@ -4,7 +4,7 @@ import os
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
-from typing import Any, Iterable, Optional
+from typing import Optional
 
 
 DB_PATH = os.path.join("data", "bbs.db")
@@ -145,7 +145,6 @@ class BbsStore:
         return int(lr) if lr is not None else 0
 
     def list_inbox(self, recipient_node_id: str, include_archived: bool = False) -> list[PmRow]:
-        status_filter = ("archived','deleted" if include_archived else "archived','deleted")
         # even when not archived, we exclude deleted always
         cur = self._db.cursor()
         cur.execute(

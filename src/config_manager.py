@@ -1,5 +1,4 @@
-from typing import Any, Optional, List, Dict, Callable
-import os
+from typing import Any, Optional, List, Dict
 from pathlib import Path
 from envyaml import EnvYAML
 from logging_utils import configure_logging, get_logger  # re-export get_logger for compatibility

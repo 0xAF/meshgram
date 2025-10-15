@@ -1,6 +1,5 @@
 import argparse
 import asyncio
-import sys
 import os
 import threading
 from typing import Optional, List
@@ -87,11 +86,20 @@ class Meshgram:
             self.logger.error(f"Error closing MessageProcessor early: {e}", exc_info=True)
 
         # 2. Cancel remaining tasks (meshtastic loops, etc.).
+        # Avoid cancelling the current task to prevent recursive cancellation.
+        try:
+            current = asyncio.current_task()
+        except Exception:
+            current = None
+        cancel_targets = []
         for task in self.tasks:
+            if task is current:
+                continue
             if not task.done():
                 task.cancel()
-        if self.tasks:
-            await asyncio.gather(*self.tasks, return_exceptions=True)
+            cancel_targets.append(task)
+        if cancel_targets:
+            await asyncio.gather(*cancel_targets, return_exceptions=True)
 
         # 3. Close Meshtastic last (hardware/network resource).
         try:
@@ -214,9 +222,10 @@ async def main() -> None:
     logger: StructuredLogger = _cast(StructuredLogger, get_logger(__name__))
 
     app = Meshgram(config)
+    # Py3.11+ has ExceptionGroup; on 3.10 fallback treat as plain Exception
     try:
         await app.run()
-    except ExceptionGroup as eg:
+    except Exception as eg:  # type: ignore[no-redef]
         for i, e in enumerate(eg.exceptions, 1):
             logger.error("run_exception", run_id=app.run_id, index=i, error=str(e), exc_info=e)
     except KeyboardInterrupt:

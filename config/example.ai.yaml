@@ -17,6 +17,9 @@ ai:
   openai:
     base_url: "https://api.openai.com/v1"
     model: "gpt-4o-mini"
+    # Use the newer Responses API endpoint (/responses) instead of Chat Completions (/chat/completions)
+    # Set to true for providers that support it (OpenAI, some compat servers). Default false keeps legacy Chat Completions.
+    use_responses_api: false
     # api_key: "${OPENAI_API_KEY}"
   ollama:
     base_url: "http://127.0.0.1:11434"

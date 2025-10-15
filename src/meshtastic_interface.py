@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import queue
-import logging
 from typing import Dict, Any, TypedDict, cast, Callable, Awaitable, Optional
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from collections import deque
 from meshtastic import tcp_interface, serial_interface
@@ -18,8 +17,6 @@ from node_manager import NodeManager
 import socket
 import os
 import errno
-import io
-import contextlib
 from meshtastic.protobuf import telemetry_pb2, portnums_pb2
 from meshtastic import BROADCAST_ADDR
 
@@ -822,7 +819,7 @@ class MeshtasticInterface:
             # Trigger app shutdown if callback provided
             if self.on_reconnect_storm is not None:
                 try:
-                    # Call it in a task to avoid reentrancy issues
+                    # Call it in a task to avoid reentrancy issues and return immediately
                     async def _do_shutdown():
                         try:
                             self.logger.error(
@@ -837,14 +834,10 @@ class MeshtasticInterface:
                             await cb()
 
                     self.loop.create_task(_do_shutdown())
+                    return
                 except Exception:
-                    # As a last resort, attempt direct await
-                    try:
-                        cb2 = self.on_reconnect_storm
-                        if cb2 is not None:
-                            await cb2()
-                    except Exception:
-                        pass
+                    # Best-effort; don't await directly to avoid recursive cancellation
+                    pass
 
     def getNodeInfo(self):
         """Lightweight health probe: use ringtone call only.
@@ -992,13 +985,13 @@ class MeshtasticInterface:
                             value = value.strip()
                             if hasattr(t.environment_metrics, key):
                                 try:
-                                    field_type = type(getattr(t.environment_metrics, key))
-                                    if field_type == float:
+                                    cur_val = getattr(t.environment_metrics, key)
+                                    if isinstance(cur_val, float):
                                         setattr(t.environment_metrics, key, float(value))
-                                    elif field_type == int:
+                                    elif isinstance(cur_val, int):
                                         setattr(t.environment_metrics, key, int(float(value)))
                                     else:
-                                        self.logger.warning(f"Unsupported telemetry field type for {key}: {field_type}")
+                                        self.logger.warning(f"Unsupported telemetry field type for {key}: {type(cur_val)}")
                                 except ValueError as ve:
                                     self.logger.error(f"Invalid value for {key}: {value} ({ve})")
                                     self.logger.warning("mt_telemetry_parse_error", instance=self.instance_id, field=key)
