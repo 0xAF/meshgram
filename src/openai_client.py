@@ -382,7 +382,6 @@ class OpenAIClient:
                         texts: List[str] = []
 
                         def _add_tool(seg: Dict[str, Any]) -> None:
-                            nonlocal tool_calls
                             try:
                                 fn = seg.get("function", {}) if isinstance(seg.get("function"), dict) else {}
                                 name = fn.get("name") or seg.get("name")
