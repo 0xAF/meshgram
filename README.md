@@ -8,9 +8,8 @@ Connect your Meshtastic mesh network with Telegram group chats! 📡💬
 - 📬 Reliable delivery: outbound queue, retries, ACK tracking, chunking (send delay + truncation notice)
 - 📨 Telegram: commands, topics/threads, reactions, locations, optional message forwarding
 - 🛰️ Mesh commands: /ping, /help, /travel, /ai, /aireset, /admin (via admin_nodes)
-- 🧠 AI chat: Ollama or OpenAI; local tool (weather script), system prompt, chain‑of‑thought stripping, threaded replies
-- � AI chat: Ollama or OpenAI (incl. Cloudflare Workers AI via Responses API); local tool (weather script), system prompt, chain‑of‑thought stripping, threaded replies
-- �🧩 Triggers engine: regex replace/prepend (mesh + Telegram) and reply (mesh) with placeholders (signal, RSSI/SNR, hops, MQTT, channel)
+- 🧠 AI chat: Ollama or OpenAI/Cloudflare (Responses API); optional local tool (weather), system prompt, chain‑of‑thought stripping, threaded replies
+- 🧩 Triggers engine: regex replace/prepend (mesh + Telegram) and reply (mesh) with placeholders (signal, RSSI/SNR, hops, MQTT, channel)
 - ✈️ Travel reply template with placeholders
 - 🔀 Per‑channel control: channel names, ignored_channels, receive_only_channels; default node/channel targeting
 - ✉️ BBS (beta): DM‑only private messages with 200B limit, queued delivery, nudges on appearance, and first‑seen recipient selection
@@ -140,11 +139,13 @@ Tool support auto‑detection:
   (e.g., Cloudflare invalid_prompt Unknown_recipient) and remember per model to stop
   sending tools next time. This removes repeated 400s and speeds up replies.
 
-Weather fallback without tools:
+Behavior when tools are disabled:
 
-- If you ask for weather and the current model doesn’t support tools, we’ll inject a compact
-  local weather context (via your `telemetry.environment_script`) so the model can still answer.
-  If the provider still errors, we’ll return the local weather summary directly instead of an error.
+- If `ai.enable_tools: false` (or the model was auto‑detected as not supporting tools), we never send
+  tool metadata or tool messages to the provider. For Cloudflare Responses API, we send a single plain
+  string input. You’ll get the model’s real response (or the real error if the provider rejects it).
+- Weather injection/fallback is only active when `ai.enable_tools: true`. With tools disabled, we don’t
+  inject any local weather context and we don’t replace provider errors with local summaries.
 
 Telegram empty‑message guard:
 
@@ -154,10 +155,12 @@ Telegram empty‑message guard:
 Troubleshooting:
 
 - Cloudflare 400 invalid_prompt with “Unknown_recipient: …” indicates the model doesn’t support tools.
-  We’ll auto‑disable tools for that model. You’ll see logs like:
+  We’ll auto‑disable tools for that model and stop sending any tool artifacts. You’ll see logs like:
   - `[openai_http_retry_cf_string_input]` – retrying with plain string input
   - `[openai_disable_tools_for_model]` – caching that tools are off for this model
   - `[openai_http_error]` – HTTP error details (status + response snippet)
+  When tools are off, you’ll also see a one‑line debug confirming the input shape to Cloudflare:
+  - `[openai_cf_input_debug] cf_input_mode=string input_kind=string tools_in_payload=false`
 - Ensure `telemetry.environment_script` points to a script that prints key: value lines. The weather
   helper parses that output and builds a summary (see `config/example.telemetry.yaml`).
 
@@ -185,6 +188,19 @@ make compose-up
 make compose-logs
 make compose-down
 ```
+
+Notes:
+
+- The Makefile creates the virtualenv using the Python on PATH (works in CI and locally).
+- `make test` ensures pytest and pytest‑asyncio are present, so async tests run out of the box.
+
+### CI
+
+GitHub Actions runs lint and tests via the Makefile for consistency with local dev:
+
+- Lint job (Python 3.12) runs `make lint`.
+- Test job matrix (3.11, 3.12, 3.13) runs `make test`.
+- Caching: pip download cache, the project venv, and Ruff’s cache to speed up runs.
   
 ## 🐳 Docker (compose)
 
@@ -249,8 +265,7 @@ Notes
 - `/listnodes` – List known nodes
 - `/ai <prompt>` – Ask the AI (if enabled)
 - `/aireset` – Reset your AI context
-- `/aidiagnose` – Show AI provider/model, tool support cache, Responses API mode, and a tiny round-trip test (aliases: /aiinfo, /ai_diag)
-- `/aidiagnose` – Show AI provider/model, tool support cache, Responses API mode, and a tiny round-trip test (aliases: /aiinfo, /ai_diag)
+- `/aidiagnose` – Show AI provider/model, tool support cache, Responses API mode, and a tiny round‑trip test (aliases: /aiinfo, /ai_diag)
 
 ### 🔍 AI diagnose
 
